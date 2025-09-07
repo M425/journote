@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Notes SPA — Plain JS</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <aside id="leftbar">
+      <div class="box small" id="tagsBox">
+        <button id="tagsCollapseBtn" style="display:block; width:100%;background:none;border:none;cursor:pointer;font-size:1.2em;z-index:2;">Tags ▾</button>
+        <div id="tagsList" class="scrollable"></div>
+      </div>
+      <div class="box small" id="journalBox">
+        <button id="journalCollapseBtn" style="display:block; width:100%;background:none;border:none;cursor:pointer;font-size:1.2em;z-index:2;">Journal ▾</button>
+        <div id="journalList" class="scrollable"></div>
+      </div>
+      <div class="box" id="treeBox">
+        <button id="treeCollapseBtn" style="display:block; width:100%;background:none;border:none;cursor:pointer;font-size:1.2em;z-index:2;">Tree ▾</button>
+        <div id="treeList" class="scrollable"></div>
+      </div>
+    </aside>
+
+    <main id="main">
+      <div id="topbar">
+        <button id="newNoteBtn" class="pill">New note</button>
+        <div id="tabsContainer"></div>
+        <button id="addTabBtn" class="pill plus">+</button>
+      </div>
+
+      <div id="columnsWrap" class="columns scrollable-x"></div>
+
+      <div id="editorWrap">
+        <textarea id="editor" placeholder="New note... type here"></textarea>
+        <div id="editorControls">
+          <button id="saveBtn">Save (Ctrl/Cmd+Enter)</button>
+          <!--<span class="hint">Tip: use <code>#tag</code> or <code>@person</code>, or type a known tag name</span>-->
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

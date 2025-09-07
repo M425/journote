@@ -1,0 +1,4 @@
+# Keep versions broad but stable.
+Flask>=2.3,<4
+flask-cors
+gunicorn>=20,<22
