@@ -57,7 +57,7 @@ body {
 }
 
 .scrollable {
-  overflow:auto;
+  overflow:scroll;
 }
 .scrollable::-webkit-scrollbar {
   width:12px;
@@ -215,12 +215,21 @@ body {
   flex: 0 0 400px;
   width: 400px;
 }
+
 .column-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
   padding: 0px;
   border-radius: 5px;
   background: white;
   box-shadow: 0px 2px 6px #999;
-  height: 100%;
+}
+.notesList {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  max-height: calc(100% - 48px); /* adjust if needed for header height */
 }
 .columnHeader {
   padding: 10px; font-weight:500; font-size: 1.2em;
@@ -242,9 +251,6 @@ body {
 }
 .noteText {
   white-space:pre-wrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
-  max-height:6.3em;
 }
 
 /* Labels for tags */
@@ -285,6 +291,13 @@ body {
 .lbl-Generic:hover {
   background: #e3b9dd;
 }
+.lbl-active {
+  background: #e4fff0;
+  color: #90c6a8;
+}
+.lbl-active:hover {
+  background: #cfe9db;
+}
 
 /* Editor area */
 #editorWrap {
@@ -305,7 +318,6 @@ body {
   font-size:1.1em;
 }
 #editorControls {
-  width:260px;
   display:flex;
   flex-direction:column;
   gap:8px;
@@ -407,9 +419,12 @@ code {
   border: none;
   color: #1976d2;
   font-size: 1.1em;
-  padding: 2px 8px;
+  padding: 2px 4px;
   border-radius: 4px;
   transition: background 0.2s;
+  margin-left: 2px;
+  font-size: 1.1em;
+  cursor: pointer;
 }
 .noteEditBtn:hover {
   background: #e3f2fd;
@@ -421,9 +436,12 @@ code {
   border: none;
   color: #d32f2f;
   font-size: 1.1em;
-  padding: 2px 8px;
+  padding: 2px 4px;
   border-radius: 4px;
   transition: background 0.2s;
+  margin-left: 2px;
+  font-size: 1.1em;
+  cursor: pointer;
 }
 .noteDelBtn:hover {
   background: #ffebee;
@@ -453,7 +471,7 @@ code {
 }
 .tree-children {
   transition: all 0.2s;
-  margin: 1px 0 1px 18px;
+  margin: 1px 0 1px 10px;
   padding: 0px;
   border-left: 2px solid #aaaaaa;
 }
@@ -461,4 +479,24 @@ code {
   list-style: none;
   position: relative;
   padding: 1px 0px;
+}
+/* Add to styles.css */
+.task-high { background: #ffeaea; border: 1px solid  #f1d1d1; }
+.task-mid  { background: #fff3d6; border: 1px solid  #e2d2ae; }
+.task-low  { background: #fffdef; border: 1px solid  #e9e6cc; }
+/* Add to your CSS file */
+.column.maximized {
+  position: fixed;
+  top: 0;
+  left: var(--left-width);
+  z-index: 9999;
+  width: calc(100vw - var(--left-width)) !important;
+  max-height: calc(100vh - 140px) !important;
+  height: 100vh !important;
+  background: #fff;
+  box-shadow: 0 0 24px rgba(0,0,0,0.2);
+  overflow: auto;
+}
+.column.active .column-content {
+    box-shadow: 0px 4px 16px #909dde;
 }

@@ -3,6 +3,8 @@ from flask_cors import CORS
 import os, json, time, uuid
 from datetime import datetime, timedelta
 import logging
+import re
+
 
 # ---------------------------
 # Logging setup
@@ -85,6 +87,27 @@ def find_tag_in_text(text: str):
     """Return first found tag in text"""
     return [word for word in text.split() if word.startswith(("#", "@", ">", "+"))]
 
+
+def extract_task_priority(text):
+    """Detect task priority and remove leading or space-preceded exclamation marks from text."""
+    priority = "none"
+    cleaned = text
+
+    # Regex: match '!!!', '!!', or '!' at start or after a space
+    match = re.search(r'(^|\s)(!{1,3})', text)
+    if match:
+        excl = match.group(2)
+        if excl == "!!!":
+            priority = "high"
+        elif excl == "!!":
+            priority = "mid"
+        elif excl == "!":
+            priority = "low"
+        # Remove only the matched exclamation marks (preserve others)
+        cleaned = re.sub(r'(^|\s)(!{1,3})', lambda m: m.group(1), text, count=1)
+    cleaned = cleaned.strip()
+    return priority, cleaned
+
 def compare_tags(tags_before, tags_after):
     tags_before = set(tags_before)
     tags_after = set(tags_after)
@@ -159,7 +182,7 @@ def patch_note(note, new_text):
         if len(any_new_tag) > 0:
             logger.info(f"Tags added: {any_new_tag}")
         save_tags()
-    return
+    return any_new_tag, any_removed_tag
 
 # ------------------ Routes ------------------
 
@@ -178,14 +201,16 @@ def api_add_note():
     if not data or "text" not in data:
         return jsonify({"error": "Missing text"}), 400
 
+    priority, cleaned_text = extract_task_priority(data["text"])
     note = {
         "id": str(uuid.uuid4()),
         "timestamp": int(time.time() * 1000),
         "date": data.get("date") or datetime.now().date().isoformat(),
-        "text": data["text"]
+        "text": cleaned_text,
+        "task": priority
     }
     add_note(note)
-    return jsonify(note), 201
+    return jsonify({"status": "created", "note": note}), 201
 
 @app.route("/api/notes/<note_id>", methods=["GET"])
 def api_get_note(note_id):
@@ -208,8 +233,10 @@ def api_patch_note(note_id):
     if not note:
         return jsonify({"error": "Not found"}), 404
 
-    patch_note(note, data["text"])
-    return jsonify(note)
+    priority, cleaned_text = extract_task_priority(data["text"])
+    note["task"] = priority
+    any_new_tag, any_removed_tag = patch_note(note, cleaned_text)
+    return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
 
 # ----- Tags -----
 @app.route("/api/tags", methods=["GET"])
