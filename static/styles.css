@@ -39,6 +39,9 @@ body {
   flex-direction:column;
   gap:0;
   background:#fafafa;
+  height: 100vh; /* full window height */
+  overflow: hidden; /* prevent spilling */
+
 }
 .box {
   padding:6px;
@@ -54,6 +57,10 @@ body {
 .box h3 {
   margin:0 0 8px 0;
   font-size:14px;
+}
+#treeBox {
+  flex: 1 1 auto;  /* grow to fill leftover space */
+  min-height: 0;   /* allow flex child to shrink */
 }
 
 .scrollable {
@@ -71,8 +78,12 @@ body {
   border:3px solid #eee;
 }
 
+.scrollable-x {
+  overflow: scroll;
+}
 .scrollable-x::-webkit-scrollbar {
   height:12px;
+  background: none;
 }
 .scrollable-x::-webkit-scrollbar-track {
   background:none;
@@ -80,7 +91,7 @@ body {
 .scrollable-x::-webkit-scrollbar-thumb {
   background:#bdbdbd;
   border-radius:6px;
-  border:3px solid #eee;
+  border:5px solid rgba(255,255,255,0.7);
 }
 
 /* Tags list */
@@ -110,47 +121,30 @@ body {
   flex:1;
   display:flex;
   flex-direction:column;
-  height:100%}
+  height:100%
+}
 #topbar {
   display:flex;
   align-items:center;
-  padding:10px;
   border-bottom:1px solid var(--border);
-  gap:10px;
+  gap:0px;
   background:linear-gradient(#ffffff,#fbfdff);
-}
-.pill {
-  background:var(--pill-blue);
-  color:#fff;
-  border:0;
-  font-weight:600;
-  cursor:pointer;
-  padding:7px;
-  border:1px solid #cfe6ff;
-  border-radius:6px;
-  box-shadow:0 2px 0 rgba(0,0,0,0.06);
-  height: 34px;
-}
-.pill:hover {
-  background:var(--pill-blue-hover)
-}
-.pill .close {
-  margin-left:8px;
-  font-weight:700;
-  opacity:0.9;
 }
 .plus {
   background:#3b9a66;
   padding:7px;
   border-radius:6px;
 }
-#tabsContainer {
-  display:flex;
-  gap:8px;
-  align-items:center;
-  flex-wrap:nowrap;
-  overflow:auto;
-  padding-bottom:0px;
+#tabsContainer {  
+  display: flex;
+  flex-direction: row;
+  gap: 1px;
+  align-items: flex-start;
+  height: 100%;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  width: calc(100vw - var(--left-width));
+  max-width: calc(100vw - var(--left-width));
 }
 
 /* Pills inside tabs container */
@@ -159,6 +153,7 @@ body {
   align-items:center;
   gap:8px;
   padding: 7px 4px 7px 7px;
+  margin: 12px 6px 0px 6px;
   border-radius:6px;
   background:#e6f1ff;
   color:#034a8f;
@@ -168,10 +163,8 @@ body {
   white-space:nowrap;
 }
 .tabPill.active {
-  background:#1976d2;
-  color:white;
+  background:#bedfff;
   border-color:#1976d2;
-  box-shadow:0 2px 6px rgba(25,118,210,0.12)
 }
 .tabPill .x {
   border-radius:4px;
@@ -499,4 +492,66 @@ code {
 }
 .column.active .column-content {
     box-shadow: 0px 4px 16px #909dde;
+}
+#journalList .calendar-header {
+  margin-bottom: 5px;
+  font-weight: 600;
+  font-size: 1.1em;
+  padding-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+#journalList .calendar-nav-btn {
+  background: none;
+  border: none;
+  font-size: 1.5em;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+#journalList .calendar-nav-btn:hover {
+  background: #e3f2fd;
+}
+#journalList .calendar-month-label {
+  font-weight: 600;
+  font-size: 1.1em;
+}
+#journalList .calendar-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+#journalList .calendar-table th {
+  text-align: center;
+  vertical-align: top;
+  border: 1px solid #ddd;
+  padding: 3px;
+  position: relative;
+  width: 14.28%;
+}
+#journalList .calendar-table td {
+  text-align: center;
+  vertical-align: top;
+  border: 1px solid #ddd;
+  padding: 3px;
+  position: relative;
+}
+#journalList .calendar-cell {
+  cursor: pointer;
+  padding: 2px;
+}
+#journalList .calendar-today {
+  background: #dbefde !important;
+}
+#journalList .calendar-weekend {
+  background: #d3d3d3;
+}
+#journalList .calendar-cell:hover {
+  background: #e3f2fd;
+}
+.duedate {
+  color: red;
+  margin-left: 10px;
 }

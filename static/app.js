@@ -1,76 +1,288 @@
-// Notes SPA with Flask backend
-// Fetches tags, journal, notes via REST API
-
-// -------------------- App state --------------------
-let notes = [];      // loaded from server
-let tabs = [];       // query tabs
+/* Working variables */
 let tags = {}
+let tasks = {}
 
-let activeTab = null;
-let maxedTab = null;
+/* DOM elements */
+const elTagsList = document.getElementById('tagsList');
+const elJournalList = document.getElementById('journalList');
+const elTreeList = document.getElementById('treeList');
+const elTabsContainer = document.getElementById('tabsContainer');
+const elColumnsWrap = document.getElementById('columnsWrap');
+const elEditor = document.getElementById('editor');
+const elSaveBtn = document.getElementById('saveBtn');
 
-// -------------------- DOM refs --------------------
-const tagsListEl = document.getElementById('tagsList');
-const journalListEl = document.getElementById('journalList');
-const treeListEl = document.getElementById('treeList');
-const tabsContainer = document.getElementById('tabsContainer');
-const columnsWrap = document.getElementById('columnsWrap');
-const editor = document.getElementById('editor');
-const saveBtn = document.getElementById('saveBtn');
-const newNoteBtn = document.getElementById('newNoteBtn');
-const addTabBtn = document.getElementById('addTabBtn');
+/* Date variables */
+let calendarYear = new Date().getFullYear();
+let calendarMonth = new Date().getMonth(); // 0-indexed
 
-// -------------------- Init --------------------
+/* Initialize */
 (async function init(){
-  await loadNotes();
   await loadAndRenderTags();
-  await loadAndRenderJournal();
-  renderTabs();
-  renderColumns();
+  renderJournalBox();
 })();
 
-// -------------------- API helpers --------------------
-async function apiGet(url){
-  const res = await fetch(url);
-  return res.json();
+/* Note helper functions */
+function getClassfromTag(tag) {
+  if (tag.startsWith('#')) return 'Projects';
+  if (tag.startsWith('@')) return 'Persons';
+  if (tag.startsWith('>')) return 'Events';
+  if (tag.startsWith('+')) return 'Generic';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(tag)) return 'Journal';
+  return 'Fulltext';
 }
-async function apiPost(url, data){
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  return res.json();
+function getAnonymizedTag(tag) {
+  if (tag.startsWith('#')) return tag.substring(1);
+  if (tag.startsWith('@')) return tag.substring(1);
+  if (tag.startsWith('>')) return tag.substring(1);
+  if (tag.startsWith('+')) return tag.substring(1);
+  return tag;
 }
-async function apiPatch(url, data) {
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  return res.json();
-}
-async function apiDelete(url) {
-  const res = await fetch(url, { method: 'DELETE' });
-  return res.json();
+async function pushNote(note) {
+  console.log('[fn] pushNote', note);
+  // Ensure tagviews exist
+  for (let tag of note.tags) {
+    if (!document.querySelector(`.column[data-key="${tag}"]`)) {
+      await addTagview(tag);
+    } else {
+      const noteList = document.querySelector(`.column[data-key="${tag}"] .notesList`);
+      if (noteList) {
+        const elNotePushed = noteList.appendChild(genNoteItem(note, tag));
+        elNotePushed.scrollIntoView({behavior:'smooth', inline:'start'});
+      }
+    }
+  }
+  if (!document.querySelector(`.column[data-key="${note.date}"]`)) {
+    await addTagview(note.date);
+  } else {
+    const noteList = document.querySelector(`.column[data-key="${note.date}"] .notesList`);
+    if (noteList) {
+      const elNotePushed = noteList.appendChild(genNoteItem(note, note.date));
+      elNotePushed.scrollIntoView({behavior:'smooth', inline:'start'});
+      // setTimeout(() => noteList.scrollTop = noteList.scrollHeight, 0);
+    }
+  }
 }
 
-// -------------------- Load data --------------------
-async function loadAndRenderTags(){
-  tags = await apiGet("/api/tags");
-  renderTagsBox();
-  renderTreeBox();
+/* DOM Generation */
+function genNoteItem(n, currentTag) {
+  const elNoteItem = document.createElement('div');
+  elNoteItem.className = 'noteItem';
+  elNoteItem.dataset.id = n.id;
+  if (n.task === 'high') elNoteItem.classList.add('task-high');
+  else if (n.task === 'mid') elNoteItem.classList.add('task-mid');
+  else if (n.task === 'low') elNoteItem.classList.add('task-low');
+
+  // Left side (date + text)
+  const elNoteLeft = document.createElement('div');
+  elNoteLeft.style.flex = '1';
+  elNoteLeft.style.display = 'flex';
+  elNoteLeft.style.flexDirection = 'column';
+  elNoteItem.appendChild(elNoteLeft);
+
+  // Note date
+  const elNoteDate = document.createElement('div');
+  elNoteDate.className = 'noteDate';
+  elNoteDate.textContent = `${n.date} · ${new Date(n.timestamp).toLocaleTimeString()}`;
+  if(n.duedate) {
+    const elNoteDuedate = document.createElement('span');
+    elNoteDuedate.className = 'duedate'
+    elNoteDuedate.textContent = `${n.duedate}`;
+    elNoteDate.appendChild(elNoteDuedate);
+  }
+  elNoteLeft.appendChild(elNoteDate);
+
+  // Note text
+  const elNoteText = elNoteLeft.appendChild(genNoteText(n, currentTag));
+
+  // Edit button
+  const elNoteEditBtn = document.createElement('button');
+  elNoteEditBtn.className = 'noteEditBtn';
+  elNoteEditBtn.textContent = '✎';
+  elNoteEditBtn.title = 'Edit note';
+  elNoteEditBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    openEditModal(n, (updatedNote) => {
+      // Update note item in place
+      elNoteText.replaceWith(genNoteText(updatedNote, currentTag));
+    });
+  };
+  elNoteItem.appendChild(elNoteEditBtn);
+
+  // Delete button
+  const elNoteDelBtn = document.createElement('button');
+  elNoteDelBtn.className = 'noteDelBtn';
+  elNoteDelBtn.textContent = '×';
+  elNoteDelBtn.title = 'Delete note';
+  elNoteDelBtn.onclick = async (ev) => {
+    ev.stopPropagation();
+    if (!confirm('Delete this note?')) return;
+    const ok = await apiDelete(`/api/notes/${n.id}`);
+    if (ok && ok.status === 'deleted') {
+      console.log('Note deleted');
+      elNoteItem.remove();
+      await loadAndRenderTags();
+    }
+  };
+  elNoteItem.appendChild(elNoteDelBtn);
+  return elNoteItem
 }
-async function loadAndRenderJournal(){
-  const journalResp = await apiGet("/api/journal");
-  renderJournalBox(journalResp);
-}
-async function loadNotes(){
-  notes = await apiGet("/api/notes");
+function genNoteText(n, currentTag) {
+  const elNoteText = document.createElement('div');
+  elNoteText.className = 'noteText';
+
+  let noteText = n.text;
+  let noteTags = extractTagsFromText(n.text, false);
+  if (noteTags && noteTags.length) {
+    noteTags.forEach(foundTag => {
+      let foundTagText = foundTag;
+      const lbl_class = getClassfromTag(foundTag);
+      if(foundTag == currentTag) foundTagText = '●'
+      let labelHtml = `<span
+        class="lbl lbl-${lbl_class}"
+        onclick="await addTagview('${foundTag}')"
+        data-tag="${foundTag}">${foundTagText}</span>`;
+      // Replace tag in text with label
+      noteText = noteText.replace(new RegExp(foundTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), labelHtml);
+    });
+  }
+  elNoteText.innerHTML = noteText;
+  return elNoteText
 }
 
-// -------------------- Render --------------------
-// Collapsible helper
+/* DOM Manipulation */
+async function addTagview(tag) {
+  console.log('[fn] addTagview', tag);
+  for (const col of elColumnsWrap.querySelectorAll('.column')) {
+    if (col.dataset.key === tag) {
+      console.log('Tagview already exists');
+      activateTagview(tag);
+      return;
+    }
+  }
+  const lenTagsviewOld = elColumnsWrap.querySelectorAll('.column').length;
+  const lenTagsviewNew = lenTagsviewOld + 1;
+
+  // Pill
+  const elPill = document.createElement('div');
+  elPill.className = 'tabPill';
+  elPill.dataset.key = tag;
+  elPill.title = `${tag}`;
+  elPill.onclick = () => activateTagview(tag);
+  elTabsContainer.appendChild(elPill);
+
+  // Pill label
+  const elPillLabel = document.createElement('span');
+  elPillLabel.textContent = tag;
+  elPill.appendChild(elPillLabel);
+
+  // Pill close button
+  const elPillCloseBtn = document.createElement('span');
+  elPillCloseBtn.className = 'x';
+  elPillCloseBtn.textContent = '×';
+  elPillCloseBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    removeTagview(tag);
+  };
+  elPill.appendChild(elPillCloseBtn);
+  elPill.scrollIntoView({behavior:'smooth', inline:'start'});
+
+  elColumnsWrap.style.gridTemplateColumns = `repeat(${lenTagsviewNew}, 1fr)`;
+
+  // Column
+  const elColumn = document.createElement('div');
+  elColumn.className = 'column';
+  elColumn.dataset.key = tag;
+  elColumn.onclick = (ev) => {
+    ev.stopPropagation();
+    activateTagview(tag);
+  }
+  elColumnsWrap.appendChild(elColumn);
+
+  // Content wrapper
+  const elColCont = document.createElement('div');
+  elColCont.className = 'column-content';
+  elColCont.dataset.key = tag;
+  elColumn.appendChild(elColCont);
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'columnHeader';
+  header.textContent = tag;
+  elColCont.appendChild(header);
+
+  // Buttons
+  const btnWrap = document.createElement('span');
+  btnWrap.style.float = 'right';
+  btnWrap.style.display = 'flex';
+  btnWrap.style.gap = '8px';
+  header.appendChild(btnWrap);
+
+  // Maximize button
+  const maxBtn = document.createElement('button');
+  maxBtn.textContent = '⛶';
+  maxBtn.title = 'Maximize column';
+  maxBtn.className = 'colMaxBtn';
+  maxBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    maximizeTab(tag);
+  };
+  btnWrap.appendChild(maxBtn);
+
+  // Close button
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.title = 'Close tab';
+  closeBtn.className = 'colCloseBtn';
+  closeBtn.onclick = (ev) => {
+    ev.stopPropagation();
+    removeTagview(tag);
+  };
+  btnWrap.appendChild(closeBtn);
+
+  // Note list
+  const elNoteList = document.createElement('div');
+  elNoteList.className = 'notesList scrollable';
+  elNoteList.textContent = 'Fetching notes...';
+  elNoteList.style.color = '#777';
+  elNoteList.style.padding = '10px';
+  elColCont.appendChild(elNoteList);
+
+  // Load notes for this tag
+  const matched = await loadNotes(tag);
+  console.log('[fn] addTagview - notes loaded', matched);
+  if(matched.length === 0) {
+    elNoteList.textContent = 'No notes';
+  } else {
+    elNoteList.textContent = '';
+    matched.forEach(n => elNoteList.appendChild(genNoteItem(n, tag)) );
+    setTimeout(() => {
+      console.log('Scrolling note list to bottom', tag);
+      elNoteList.scrollTop = elNoteList.scrollHeight;
+    }, 0);
+  }
+  activateTagview(tag);
+}
+function removeTagview(tag) {
+  console.log('[fn] removeTagview', tag);
+  const elColToRemove = elColumnsWrap.querySelector(`.column[data-key="${tag}"]`);
+  if (elColToRemove) elColToRemove.remove()
+  const pill = elTabsContainer.querySelector(`.tabPill[data-key="${tag}"]`);
+  if (pill) pill.remove();
+
+  // check if there is no active tab, activate last tab if exists
+  const activePill = elTabsContainer.querySelector('.tabPill.active');
+  if (!activePill) {
+    const allPills = elTabsContainer.querySelectorAll('.tabPill');
+    if (allPills.length > 0) {
+      const lastPill = allPills[allPills.length - 1];
+      activateTagview(lastPill.dataset.key);
+    }
+  }
+
+  const lenTagsviewOld = elColumnsWrap.querySelectorAll('.column').length + 1;
+  const lenTagsviewNew = elColumnsWrap.querySelectorAll('.column').length;
+  elColumnsWrap.style.gridTemplateColumns = `repeat(${lenTagsviewNew}, 1fr)`;
+}
 function makeCollapsible(boxId, btnId, contentEl, title) {
   const box = document.getElementById(boxId);
   let btn = document.getElementById(btnId);
@@ -89,7 +301,7 @@ function makeCollapsible(boxId, btnId, contentEl, title) {
   };
 }
 function renderTreeBox() {
-  treeListEl.innerHTML = '';
+  elTreeList.innerHTML = '';
 
   // Filter only project tags with treed === true
   const projectTags = Object.entries(tags)
@@ -123,7 +335,7 @@ function renderTreeBox() {
   // Map: tag -> tasks to show under it
   const tasksByTag = {};
   const rootTasks = [];
-  notes.forEach(note => {
+  tasks.forEach(note => {
     if (!note.task || note.task === 'none') return;
     // Find all project tags in note
     const noteTags = (note.tags || []).filter(t => tags[t]);
@@ -163,7 +375,7 @@ function renderTreeBox() {
     const tagSpan = document.createElement('span');
     tagSpan.textContent = node.tag;
     tagSpan.className = `tree-tag lbl lbl-${node.category}`;
-    tagSpan.onclick = () => createTab(node.tag, 'tag');
+    tagSpan.onclick = async () => await addTagview(node.tag);
     li.appendChild(tagSpan);
 
     // Show tasks under this tag
@@ -183,9 +395,14 @@ function renderTreeBox() {
         else if (note.task === 'mid') taskLi.classList.add('task-mid');
         else if (note.task === 'low') taskLi.classList.add('task-low');
         // Show a short preview of the note
-        taskLi.textContent = note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
+        taskLi.textContent = '';
+        console.log(note)
+        if (note.duedate) {
+          taskLi.textContent = note.duedate;
+        }
+        taskLi.textContent += note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
         taskLi.title = note.text;
-        taskLi.onclick = () => createTab(node.tag, 'tag');
+        taskLi.onclick = async () => await addTagview(node.tag);
         taskList.appendChild(taskLi);
       });
       li.appendChild(taskList);
@@ -213,11 +430,11 @@ function renderTreeBox() {
       };
     }
 
-    // Append to parent UL or treeListEl
+    // Append to parent UL or elTreeList
     if (parentUl) {
       parentUl.appendChild(li);
     } else {
-      treeListEl.appendChild(li);
+      elTreeList.appendChild(li);
     }
   }
 
@@ -236,21 +453,26 @@ function renderTreeBox() {
       if (note.task === 'high') taskLi.classList.add('task-high');
       else if (note.task === 'mid') taskLi.classList.add('task-mid');
       else if (note.task === 'low') taskLi.classList.add('task-low');
-      taskLi.textContent = note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
+      taskLi.textContent = '';
+      console.log(note)
+      if (note.duedate) {
+        taskLi.textContent = "" + note.duedate + "] ";
+      }
+      taskLi.textContent += note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
       taskLi.title = note.text;
-      taskLi.onclick = () => createTab(note.date, 'date');
+      taskLi.onclick = async () => await addTagview(note.date);
       topUl.appendChild(taskLi);
     });
   }
 
   roots.forEach(root => renderNode(root, 0, topUl));
-  treeListEl.appendChild(topUl);
+  elTreeList.appendChild(topUl);
 
-  makeCollapsible('treeBox', 'treeCollapseBtn', treeListEl, 'Tree');
+  makeCollapsible('treeBox', 'treeCollapseBtn', elTreeList, 'Tree');
 }
 function renderTagsBox(){
   console.log('[fn] renderTagsBox', tags);
-  tagsListEl.innerHTML = '';
+  elTagsList.innerHTML = '';
   
   const sectionsDiv = {
     'Projects': document.createElement('div'),
@@ -267,7 +489,7 @@ function renderTagsBox(){
     let ul = document.createElement('ul');
     ul.className = 'tagList';
     secDiv.appendChild(ul);
-    tagsListEl.appendChild(secDiv);
+    elTagsList.appendChild(secDiv);
   });
   Object.entries(tags).forEach(([tag, info]) => {
     const li = document.createElement('li');
@@ -279,7 +501,7 @@ function renderTagsBox(){
     span.textContent = tag;
     span.style.flex = '1';
     span.style.cursor = 'pointer';
-    span.onclick = () => createTab(tag, 'tag');
+    span.onclick = async () => await addTagview(tag);
     li.appendChild(span);
 
     // Eye button for visibility toggle
@@ -317,239 +539,229 @@ function renderTagsBox(){
 
     sectionsDiv[info.category].querySelector('ul').appendChild(li);
   });
-  makeCollapsible('tagsBox', 'tagsCollapseBtn', tagsListEl, 'Tags');
+  makeCollapsible('tagsBox', 'tagsCollapseBtn', elTagsList, 'Tags');
 }
-function activateTab(key){
-  activeTab = key;
-  console.log('[fn] activateTab', activeTab);
-  document.querySelectorAll('.tabPill').forEach(el => el.classList.remove('active'));
-  document.querySelectorAll('.column').forEach(el => el.classList.remove('active'));
-  const pill = document.querySelector(`.tabPill[data-key="${activeTab}"]`);
-  if(pill) pill.classList.add('active');
-  const col = document.querySelector(`.column[data-key="${activeTab}"]`);
+function activateTagview(key){
+  console.log('[fn] activateTagview', key);
+  
+  for(const el of document.querySelectorAll('.tabPill')) el.classList.remove('active');
+  for(const el of document.querySelectorAll('.column')) el.classList.remove('active');
+  const pill = document.querySelector(`.tabPill[data-key="${key}"]`);
+  if(pill) {
+    pill.scrollIntoView({behavior:'smooth', inline:'nearest', container: 'nearest'});
+    pill.classList.add('active');
+  }
+  const col = document.querySelector(`.column[data-key="${key}"]`);
   if(col) {
     col.scrollIntoView({behavior:'smooth', inline:'start'});
     col.classList.add('active');
   }
 }
+function renderJournalBox() {
+  elJournalList.innerHTML = '';
 
-function renderJournalBox(days){
-  console.log('[fn] renderJournalBox');
-  journalListEl.innerHTML = '';
-  const ul = document.createElement('ul');
-  ul.style.listStyle = 'none';
-  ul.style.paddingLeft = '8px';
-  ul.style.margin = '0';
-  days.forEach(d => {
-    const li = document.createElement('li');
-    li.textContent = d;
-    li.style.cursor = 'pointer';
-    li.style.padding = '6px 4px';
-    li.onclick = () => createTab(d, 'date');
-    ul.appendChild(li);
-  });
-  journalListEl.appendChild(ul);
-  makeCollapsible('journalBox', 'journalCollapseBtn', journalListEl, 'Journal');
-}
-function renderTabs(){
-  console.log('[fn] renderTabs', tabs);
-  tabsContainer.innerHTML = '';
-  tabs.forEach((t) => {
-    const pill = document.createElement('div');
-    pill.className = 'tabPill';
-    if(t.query === activeTab) pill.classList.add('active');
-    pill.dataset.key = t.query;
-    pill.title = `${t.query}`;
+  // Header with month navigation
+  const elJournalHeader = document.createElement('div');
+  elJournalHeader.className = 'calendar-header';
 
-    const label = document.createElement('span');
-    label.textContent = t.query;
-    pill.appendChild(label);
+  const elJournalPrevBtn = document.createElement('button');
+  elJournalPrevBtn.className = 'calendar-nav-btn';
+  elJournalPrevBtn.textContent = '‹';
+  elJournalPrevBtn.onclick = () => {
+    calendarMonth--;
+    if (calendarMonth < 0) {
+      calendarMonth = 11;
+      calendarYear--;
+    }
+    renderJournalBox();
+  };
 
-    const x = document.createElement('span');
-    x.className = 'x';
-    x.textContent = '×';
-    x.onclick = (ev) => {
-      ev.stopPropagation();
-      removeTab(t.query);
+  const elJournalNextBtn = document.createElement('button');
+  elJournalNextBtn.className = 'calendar-nav-btn';
+  elJournalNextBtn.textContent = '›';
+  elJournalNextBtn.onclick = () => {
+    calendarMonth++;
+    if (calendarMonth > 11) {
+      calendarMonth = 0;
+      calendarYear++;
+    }
+    renderJournalBox();
+  };
+
+  const elJournalMonthLabel = document.createElement('span');
+  elJournalMonthLabel.className = 'calendar-month-label';
+  elJournalMonthLabel.textContent = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}`;
+
+  elJournalHeader.appendChild(elJournalPrevBtn);
+  elJournalHeader.appendChild(elJournalMonthLabel);
+  elJournalHeader.appendChild(elJournalNextBtn);
+  elJournalList.appendChild(elJournalHeader);
+
+  // Calendar grid
+  const elJournalTable = document.createElement('table');
+  elJournalTable.className = 'calendar-table';
+
+  // Weekday headers
+  const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const elJournalThead = document.createElement('thead');
+  const elJournalTrHead = document.createElement('tr');
+  for(const day of weekdays) {
+    const elJournalTrHeadTh = document.createElement('th');
+    elJournalTrHeadTh.textContent = day;
+    elJournalTrHead.appendChild(elJournalTrHeadTh);
+  }
+  elJournalThead.appendChild(elJournalTrHead);
+  elJournalTable.appendChild(elJournalThead);
+
+  // Days
+  let firstDay = new Date(calendarYear, calendarMonth, 1).getDay();
+  firstDay = (firstDay === 0) ? 6 : firstDay - 1;
+  const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+  const elJournalTbody = document.createElement('tbody');
+  let elJournalTrBody = document.createElement('tr');
+  let dayCount = 0;
+
+  // Fill empty cells before first day
+  for (let i = 0; i < firstDay; i++) {
+    const elJournalTdBody = document.createElement('td');
+    elJournalTdBody.textContent = '';
+    elJournalTrBody.appendChild(elJournalTdBody);
+    dayCount++;
+  }
+
+  // Fill days
+  for (let d = 1; d <= daysInMonth; d++) {
+    if (dayCount % 7 === 0 && dayCount !== 0) {
+      elJournalTbody.appendChild(elJournalTrBody);
+      elJournalTrBody = document.createElement('tr');
+    }
+    const elJournalTdBody = document.createElement('td');
+    elJournalTdBody.textContent = d;
+    elJournalTdBody.className = 'calendar-cell';
+
+    // Mark weekends (Saturday: 5, Sunday: 6)
+    const weekdayIndex = (dayCount % 7);
+    if (weekdayIndex === 5 || weekdayIndex === 6) {
+      elJournalTdBody.classList.add('calendar-weekend');
+    }
+
+    // Highlight today
+    const today = new Date();
+    const isToday =
+      calendarYear === today.getFullYear() &&
+      calendarMonth === today.getMonth() &&
+      d === today.getDate();
+    if (isToday) {
+      elJournalTdBody.classList.add('calendar-today');
+    }
+
+    elJournalTdBody.onclick = () => {
+      const dateStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      addTagview(dateStr);
     };
-    pill.appendChild(x);
-    pill.onclick = () => activateTab(t.query);
-    tabsContainer.appendChild(pill);
-  });
-  tabsContainer.scrollLeft = tabsContainer.scrollWidth;
+    elJournalTrBody.appendChild(elJournalTdBody);
+    dayCount++;
+  }
+
+  // Fill remaining cells
+  while (dayCount % 7 !== 0) {
+    const elJournalTdBody = document.createElement('td');
+    elJournalTdBody.textContent = '';
+    elJournalTrBody.appendChild(elJournalTdBody);
+    dayCount++;
+  }
+  elJournalTbody.appendChild(elJournalTrBody);
+  elJournalTable.appendChild(elJournalTbody);
+
+  elJournalList.appendChild(elJournalTable);
+
+  makeCollapsible('journalBox', 'journalCollapseBtn', elJournalList, 'Journal');
 }
 function maximizeTab(key) {
   console.log('[fn] maximizeTab', key);
-  maxedTab = key;
   const col = document.querySelector(`.column[data-key="${key}"]`);
   if (!col) return;
   col.classList.toggle('maximized');
 }
-function renderColumns(){
-  console.log('[fn] renderColumns');
-  columnsWrap.innerHTML = '';
 
-  if(tabs.length === 0){
-    const placeholder = document.createElement('div');
-    placeholder.className = 'column';
-    placeholder.style.justifyContent = 'center';
-    placeholder.style.alignItems = 'center';
-    placeholder.innerHTML = '<div style="color:#999">No queries yet — click a tag or a date, or type tags into the editor to create searches.</div>';
-    columnsWrap.appendChild(placeholder);
-    return;
-  }
-
-  columnsWrap.style.gridTemplateColumns = `repeat(${tabs.length}, 1fr)`;
-
-  tabs.forEach(t => {
-    const col = document.createElement('div');
-    col.className = 'column';
-    if(t.query === activeTab) col.classList.add('active');
-    if(t.query === maxedTab) col.classList.add('maximized');
-    col.dataset.key = t.query;
-
-    const col_cont = document.createElement('div');
-    col_cont.className = 'column-content';
-    col_cont.dataset.key = t.query;
-
-    const header = document.createElement('div');
-    header.className = 'columnHeader';
-    header.textContent = (t.type === 'date' ? `${t.query}` : t.query);
-    col.appendChild(col_cont);
-    col_cont.appendChild(header);
-
-    // --- Add buttons ---
-    const btnWrap = document.createElement('span');
-    btnWrap.style.float = 'right';
-    btnWrap.style.display = 'flex';
-    btnWrap.style.gap = '8px';
-
-    // Maximize button
-    const maxBtn = document.createElement('button');
-    maxBtn.textContent = '⛶';
-    maxBtn.title = 'Maximize column';
-    maxBtn.className = 'colMaxBtn';
-    maxBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      maximizeTab(t.query);
-    };
-    btnWrap.appendChild(maxBtn);
-
-    // Close button
-    const closeBtn = document.createElement('button');
-    closeBtn.textContent = '×';
-    closeBtn.title = 'Close tab';
-    closeBtn.className = 'colCloseBtn';
-    closeBtn.onclick = (ev) => {
-      ev.stopPropagation();
-      removeTab(t.query);
-    };
-    btnWrap.appendChild(closeBtn);
-
-    header.appendChild(btnWrap);
-
-    const list = document.createElement('div');
-    list.className = 'notesList scrollable';
-    const matched = filterNotesForTab(t);
-    if(matched.length === 0){
-      list.textContent = 'No notes';
-      list.style.color = '#777';
-      list.style.padding = '10px';
-    } else {
-      matched.forEach(n => {
-        const item = document.createElement('div');
-        item.className = 'noteItem';
-        
-        if (n.task === 'high') item.classList.add('task-high');
-        else if (n.task === 'mid') item.classList.add('task-mid');
-        else if (n.task === 'low') item.classList.add('task-low');
-
-        const left = document.createElement('div');
-        left.style.flex = '1';
-        left.style.display = 'flex';
-        left.style.flexDirection = 'column';
-
-        const dt = document.createElement('div');
-        dt.className = 'noteDate';
-        dt.textContent = `${n.date} · ${new Date(n.timestamp).toLocaleTimeString()}`;
-        const txt = document.createElement('div');
-        txt.className = 'noteText';
-        // Inline tag labels in text
-        let noteText = n.text;
-        let noteTags = extractTagsFromText(n.text, false);
-        let tagText = ''
-        if (noteTags && noteTags.length) {
-          noteTags.forEach(tag => {
-            // Build label span as HTML
-            let lbl_class = 'Generic';
-            if (tag.startsWith('#')) lbl_class = 'Projects';
-            else if (tag.startsWith('@')) lbl_class = 'Persons';
-            else if (tag.startsWith('>')) lbl_class = 'Events';
-            
-            tagText = tag;
-            if(tag == t.query) {
-              lbl_class = 'active';
-              tagText = '●'
-            }
-            let labelHtml = `<span class="lbl lbl-${lbl_class}" onclick="createTab('${tag}', 'tag')" data-tag="${tag}">${tagText}</span>`;
-            // Replace tag in text with label
-            noteText = noteText.replace(new RegExp(tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), labelHtml);
-          });
-        }
-        txt.innerHTML = noteText;
-        left.appendChild(dt);
-        left.appendChild(txt);
-
-
-        // Edit button
-        const editBtn = document.createElement('button');
-        editBtn.className = 'noteEditBtn';
-        editBtn.textContent = '✎';
-        editBtn.title = 'Edit note';
-        editBtn.onclick = (ev) => {
-          ev.stopPropagation();
-          openEditModal(n);
-        };
-
-        // Delete button
-        const delBtn = document.createElement('button');
-        delBtn.className = 'noteDelBtn';
-        delBtn.textContent = '×';
-        delBtn.title = 'Delete note';
-        delBtn.onclick = async (ev) => {
-          ev.stopPropagation();
-          if (!confirm('Delete this note?')) return;
-          const ok = await apiDelete(`/api/notes/${n.id}`);
-          if (ok && ok.status === 'deleted') {
-            notes = notes.filter(nn => nn.id !== n.id);
-            await loadAndRenderTags();
-            renderColumns();
-          }
-        };
-
-        item.appendChild(left);
-        item.appendChild(editBtn);
-        item.appendChild(delBtn);
-        list.appendChild(item);
-      });
-      setTimeout(() => {
-        list.scrollTop = list.scrollHeight;
-      }, 0);
-    }
-    col_cont.appendChild(list);
-    columnsWrap.appendChild(col);
+/* API calls */
+async function apiGet(url){
+  const res = await fetch(url);
+  return res.json();
+}
+async function apiPost(url, data){
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
   });
-  document.querySelectorAll('.column').forEach(col => {
-    col.onclick = () => {
-      console.log('Column clicked:', col.dataset.key);
-      activateTab(col.dataset.key);
-    };
+  return res.json();
+}
+async function apiPatch(url, data) {
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data)
   });
+  return res.json();
+}
+async function apiDelete(url) {
+  const res = await fetch(url, { method: 'DELETE' });
+  return res.json();
 }
 
-// -------------------- Edit Modal --------------------
+/* Data management */
+async function loadAndRenderTags(){
+  tags = await apiGet("/api/tags");
+  tasks = await apiGet("/api/tasks");
+  renderTagsBox();
+  renderTreeBox();
+}
+async function loadNotes(tag){
+  console.log('[fn] loadNotes', tag);
+  const category = getClassfromTag(tag);
+  const anonTag = getAnonymizedTag(tag);
+  const notes = await apiGet(`/api/notes/${category}/${anonTag}`);
+  return notes;
+}
+async function saveNote(){
+  const raw = elEditor.value.trim();
+  if(!raw) return;
+  const date = parseLeadingDate(raw) || (new Date()).toISOString().slice(0,10);
+  const noteTags = extractTagsFromText(raw, false);
+
+  const response = await apiPost("/api/notes", {
+    text: raw,
+    date,
+    noteTags
+  });
+  console.log("API response:", response);
+  if(!response || !response.note.id) {
+    alert('Error saving note');
+    return;
+  }
+  pushNote(response.note);
+
+  rawWords = raw.split(/\s+/);
+  const newRawWords = new Array();
+  for (let w of rawWords) {
+    if (w.startsWith('#') || w.startsWith('@') || w.startsWith('>') || w.startsWith('+')) {
+      newRawWords.push(w);
+    } else {
+      break;
+    }
+  }
+  elEditor.value = '';
+  for (let w of newRawWords) {
+    elEditor.value += w + ' ';
+  }
+  elEditor.focus();
+  await loadAndRenderTags();
+}
+
+/* Modals */
 let editModal = null;
-function openEditModal(note) {
+function openEditModal(note, editCallback=null) {
   if (editModal) editModal.remove();
   editModal = document.createElement('div');
   editModal.className = 'modal';
@@ -581,11 +793,12 @@ function openEditModal(note) {
     // PATCH API
     const updated = await apiPatch(`/api/notes/${note.id}`, { text: newText });
     console.log("API response:", updated);
-    // Update local note
-    const idx = notes.findIndex(n => n.id === note.id);
-    notes[idx] = updated.note;
+    if(!updated || !updated.note.id || updated.status != 'patched') {
+      alert('Error saving note');
+      return;
+    }
+    editCallback?.(updated.note);
     await loadAndRenderTags();
-    renderColumns();
     editModal.remove();
     editModal = null;
   };
@@ -646,60 +859,6 @@ function openEditTreeTagModal(tag) {
   };
 }
 
-// -------------------- Tabs --------------------
-function createTab(query, type='tag'){
-  console.log(`[fn] createTab: type=${type}, query=${query}`, tabs);
-  if(tabs.some(t => t.query === query)) return;
-  tabs.push({type, query});
-  renderTabs();
-  renderColumns();
-  activateTab(query);
-}
-function removeTab(key){
-  console.log(`[fn] removeTab: key=${key}`, tabs);
-  tabs = tabs.filter(t => t.query !== key);
-  renderTabs();
-  renderColumns();
-  if (tabs.find(t => t.query === activeTab)) {
-    activateTab(activeTab);
-  } else {
-    activateTab(tabs.length > 0 ? tabs[tabs.length-1].query : null);
-  }
-}
-
-// -------------------- Filtering --------------------
-function filterNotesForTab(tab){
-  if(tab.type === 'date'){
-    // Sort ascending (oldest first)
-    return notes.filter(n => n.date === tab.query).sort((a,b)=>a.timestamp-b.timestamp);
-  } else {
-    const q = tab.query.toLowerCase();
-
-    function getDescendants(tag) {
-      const descendants = new Set();
-      function recurse(currentTag) {
-        Object.entries(tags).forEach(([childTag, info]) => {
-          if (info.parent === currentTag) {
-            descendants.add(childTag);
-            recurse(childTag);
-          }
-        });
-      }
-      recurse(tag);
-      return descendants;
-    }
-
-    const allTags = new Set([tab.query]);
-    getDescendants(tab.query).forEach(t => allTags.add(t));
-
-    // Sort ascending (oldest first)
-    return notes.filter(n => 
-      (n.tags || []).some(tt => allTags.has(tt)) ||
-      n.text.toLowerCase().includes(q)
-    ).sort((a,b)=>a.timestamp-b.timestamp);
-  }
-}
-
 // -------------------- Editor --------------------
 function extractTagsFromText(text, trailing_space=true){
   const tagsfound = new Set();
@@ -723,114 +882,90 @@ function parseLeadingDate(text){
 // -------------------- Editor events --------------------
 
 let typingDebounce = null;
-editor.addEventListener('input', ()=>{
+elEditor.addEventListener('input', ()=>{
   clearTimeout(typingDebounce);
   typingDebounce = setTimeout(()=>{
-    const txt = editor.value;
+    const txt = elEditor.value;
     const foundTags = extractTagsFromText(txt);
-    foundTags.forEach(tag => createTab(tag, 'tag'));
+    foundTags.forEach(tag => addTagview(tag));
     const date = parseLeadingDate(txt);
-    if(date) createTab(date, 'date');
-  }, 300);
+    if(date) addTagview(date);
+  }, 500);
 });
-
-saveBtn.addEventListener('click', saveNote);
-newNoteBtn.addEventListener('click', ()=> editor.focus());
-addTabBtn.addEventListener('click', ()=>{
-  const q = prompt('Enter search term:');
-  if(q && q.trim()) createTab(q.trim(), 'custom');
-});
-editor.addEventListener('keydown', (ev)=>{
+elEditor.addEventListener('keydown', (ev)=>{
   if((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter'){
     ev.preventDefault();
     saveNote();
   }
 });
+elSaveBtn.addEventListener('click', saveNote);
+
+/* Keyboard shortcuts */
 document.addEventListener('keydown', (ev) => {
   if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
+    /* Alt + n --> focus on editor */
     if (ev.key.toLowerCase() === 'n') {
       ev.preventDefault();
-      editor.focus();
+      elEditor.focus();
     }
+    /* Alt + t --> add today's journal entry */
     if (ev.key.toLowerCase() === 't') {
       ev.preventDefault();
-      // Open today tab (assuming today's date in ISO format)
       const today = new Date().toISOString().slice(0, 10);
-      createTab(today, 'date');
+      addTagview(today);
     }
-    if (ev.key.toLowerCase() === 'q') {
-      ev.preventDefault();
-      const q = prompt('Enter search term:');
-      if(q && q.trim()) createTab(q.trim(), 'custom');
-    }
+    /* Alt + w --> close current tab */
     if (ev.key.toLowerCase() === 'w') {
       ev.preventDefault();
-      // Close active tab
-      if (activeTab) removeTab(activeTab);
+      removeTagview(document.querySelector('.tabPill.active')?.dataset.key);
     }
+    /* Alt + 1..9 --> switch to tab */
     if (!isNaN(parseInt(ev.key, 10))) {
       ev.preventDefault();
       let evIndex = parseInt(ev.key, 10)-1;
       console.log('Numeric key pressed:', evIndex);
-      if (tabs[evIndex]) {
-        activateTab(tabs[evIndex].query);
+      const tabs = Array.from(document.querySelectorAll('.tabPill'));
+      if (evIndex >= 0 && evIndex < tabs.length) {
+        activateTagview(tabs[evIndex].dataset.key);
       }
     }
-
+    /* Alt + Arrow left --> swith to arrow left */
     if (ev.key === 'ArrowLeft') {
       ev.preventDefault();
       // Activate previous tab if exists
-      const currentIndex = tabs.findIndex(t => t.query === activeTab);
+      const tabs = Array.from(document.querySelectorAll('.tabPill'));
+      const activeTab = document.querySelector('.tabPill.active')?.dataset.key;
+      const currentIndex = tabs.findIndex(t => t.dataset.key === activeTab);
       if (currentIndex > 0) {
-        activateTab(tabs[currentIndex - 1].query);
+        activateTagview(tabs[currentIndex - 1].dataset.key);
       }
     }
+    /* Alt + Arrow right --> swith to arrow right */
     if (ev.key === 'ArrowRight') {
       ev.preventDefault();
       // Activate next tab if exists
-      const currentIndex = tabs.findIndex(t => t.query === activeTab);
+      const tabs = Array.from(document.querySelectorAll('.tabPill'));
+      const activeTab = document.querySelector('.tabPill.active')?.dataset.key;
+      const currentIndex = tabs.findIndex(t => t.dataset.key === activeTab);
       if (currentIndex >= 0 && currentIndex < tabs.length - 1) {
-        activateTab(tabs[currentIndex + 1].query);
+        activateTagview(tabs[currentIndex + 1].dataset.key);
       }
     }
+    /* Alt + Arrow up/down --> maximize/restore current tab */
     if(ev.key == 'ArrowUp') {
       ev.preventDefault();
-      console.log('Scroll up active column');
-      // Scroll active column up
-      document.querySelector(`.column[data-key="${activeTab}"] .colMaxBtn`).click()
+      // Maximize active tab
+      const activeTab = document.querySelector('.tabPill.active')?.dataset.key;
+      if (activeTab) document.querySelector(`.column[data-key="${activeTab}"] .colMaxBtn`).click()
+    }
+    /* Alt + Arrow up/down --> maximize/restore current tab */
+    if(ev.key == 'ArrowDown') {
+      ev.preventDefault();
+      // Restore active tab
+      const activeTab = document.querySelector('.tabPill.active')?.dataset.key;
+      if (activeTab) document.querySelector(`.column[data-key="${activeTab}"] .colMaxBtn`).click()
     }
   }
 });
-// -------------------- Save note --------------------
-async function saveNote(){
-  const raw = editor.value.trim();
-  if(!raw) return;
-  const date = parseLeadingDate(raw) || (new Date()).toISOString().slice(0,10);
-  const noteTags = extractTagsFromText(raw, false);
 
-  const response = await apiPost("/api/notes", {
-    text: raw,
-    date,
-    noteTags
-  });
-  notes.push(response.note);
 
-  noteTags.forEach(t => createTab(t, 'tag'));
-  createTab(date, 'date');
-  rawWords = raw.split(/\s+/);
-  const newRawWords = new Array();
-  for (let w of rawWords) {
-    if (w.startsWith('#') || w.startsWith('@') || w.startsWith('>') || w.startsWith('+')) {
-      newRawWords.push(w);
-    } else {
-      break;
-    }
-  }
-  editor.value = '';
-  for (let w of newRawWords) {
-    editor.value += w + ' ';
-  }
-  editor.focus();
-  await loadAndRenderTags();
-  renderColumns();
-}

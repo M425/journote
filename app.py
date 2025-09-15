@@ -28,7 +28,8 @@ CATEGORIES = {
     "Projects": "#",
     "Persons": "@",
     "Events": ">",
-    "Generic": "+"
+    "Generic": "+",
+    "Journal": ""
 }
 
 # ------------------ Utilities ------------------
@@ -90,11 +91,12 @@ def find_tag_in_text(text: str):
 
 def extract_task_priority(text):
     """Detect task priority and remove leading or space-preceded exclamation marks from text."""
-    priority = "none"
     cleaned = text
+    priority = None
+    duedate = None
 
     # Regex: match '!!!', '!!', or '!' at start or after a space
-    match = re.search(r'(^|\s)(!{1,3})', text)
+    match = re.search(r'(^|\s)(!{1,3})(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', text)
     if match:
         excl = match.group(2)
         if excl == "!!!":
@@ -104,9 +106,25 @@ def extract_task_priority(text):
         elif excl == "!":
             priority = "low"
         # Remove only the matched exclamation marks (preserve others)
-        cleaned = re.sub(r'(^|\s)(!{1,3})', lambda m: m.group(1), text, count=1)
+        match_duedate = match.group(3)
+        if match_duedate:
+            if match_duedate == "today":
+                duedate = datetime.now().date().isoformat()
+            elif match_duedate == "tomorrow":
+                duedate = (datetime.now().date() + timedelta(days=1)).isoformat()
+            elif match_duedate == "week":
+                duedate = (datetime.now().date() + timedelta(days=7)).isoformat()
+            elif len(match_duedate) == 5:
+                duedate = f'{datetime.now().year}-{match_duedate}'
+            elif len(match_duedate) == 8:
+                duedate = datetime.strptime(match_duedate, '%y-%m-%d').isoformat()
+            elif len(match_duedate) == 10:
+                duedate = datetime.strptime(match_duedate, '%Y-%m-%d').isoformat()
+
+        cleaned = re.sub(r'(^|\s)(!{1,3})(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', lambda m: m.group(1), text, count=1)
+        # cleaned += ' ' + match.group(0).strip()
     cleaned = cleaned.strip()
-    return priority, cleaned
+    return priority, duedate, cleaned
 
 def compare_tags(tags_before, tags_after):
     tags_before = set(tags_before)
@@ -195,19 +213,38 @@ def api_serve_index():
 def api_get_notes():
     return jsonify(notes)
 
+@app.route("/api/notes/<category>/<anonTag>", methods=["GET"])
+def api_get_tagged_notes(category, anonTag):
+    logger.debug(f"Getting notes for category {category} and tag {anonTag}")
+    if category == "Journal":
+        try:
+            datetime.strptime(anonTag, "%Y-%m-%d")
+        except ValueError:
+            return jsonify({"error": "Invalid date format, expected YYYY-MM-DD"}), 400
+        filtered_notes = [note for note in notes if note.get("date") == anonTag]
+        return jsonify(filtered_notes)
+    if category not in CATEGORIES:
+        return jsonify({"error": "Invalid category"}), 400
+    tag = CATEGORIES[category] + anonTag
+    # check if anontag is a date
+    filtered_notes = [note for note in notes if tag in note.get("tags", [])]
+    logger.info(f"Filtering notes for tag {tag}, found {len(filtered_notes)} notes")
+    return jsonify(filtered_notes)
+
 @app.route("/api/notes", methods=["POST"])
 def api_add_note():
     data = request.get_json()
     if not data or "text" not in data:
         return jsonify({"error": "Missing text"}), 400
 
-    priority, cleaned_text = extract_task_priority(data["text"])
+    priority, duedate, cleaned_text = extract_task_priority(data["text"])
     note = {
         "id": str(uuid.uuid4()),
         "timestamp": int(time.time() * 1000),
         "date": data.get("date") or datetime.now().date().isoformat(),
         "text": cleaned_text,
-        "task": priority
+        "task": priority,
+        "duedate": duedate
     }
     add_note(note)
     return jsonify({"status": "created", "note": note}), 201
@@ -233,8 +270,9 @@ def api_patch_note(note_id):
     if not note:
         return jsonify({"error": "Not found"}), 404
 
-    priority, cleaned_text = extract_task_priority(data["text"])
+    priority, duedate, cleaned_text = extract_task_priority(data["text"])
     note["task"] = priority
+    note['duedate'] = duedate
     any_new_tag, any_removed_tag = patch_note(note, cleaned_text)
     return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
 
@@ -242,6 +280,16 @@ def api_patch_note(note_id):
 @app.route("/api/tags", methods=["GET"])
 def api_get_tags():
     return jsonify(tags)
+
+# ----- Tasks -----
+@app.route("/api/tasks", methods=["GET"])
+def api_get_tasks():
+    logger.debug(f"Getting tasks")
+    filtered_notes = [note for note in notes if note.get("task", '') in ['low', 'mid', 'high']]
+    logger.info(f"Filtering notes for tasks, found {len(filtered_notes)} notes")
+    return jsonify(filtered_notes)
+    
+
 
 @app.route("/api/tags/<category>/<anonTag>/tree", methods=["PATCH"])
 def api_patch_tag_tree(category, anonTag):
