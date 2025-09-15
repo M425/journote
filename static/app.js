@@ -1,3 +1,4 @@
+
 /* Working variables */
 let tags = {}
 let tasks = {}
@@ -15,13 +16,7 @@ const elSaveBtn = document.getElementById('saveBtn');
 let calendarYear = new Date().getFullYear();
 let calendarMonth = new Date().getMonth(); // 0-indexed
 
-/* Initialize */
-(async function init(){
-  await loadAndRenderTags();
-  renderJournalBox();
-})();
-
-/* Note helper functions */
+/* Helper functions */
 function getClassfromTag(tag) {
   if (tag.startsWith('#')) return 'Projects';
   if (tag.startsWith('@')) return 'Persons';
@@ -60,6 +55,19 @@ async function pushNote(note) {
       elNotePushed.scrollIntoView({behavior:'smooth', inline:'start'});
       // setTimeout(() => noteList.scrollTop = noteList.scrollHeight, 0);
     }
+  }
+}
+function getTag(tag) {
+  const filtered = tags.filter((t) => {
+    return tag == t.name
+  });
+  return filtered[0];
+}
+
+function replaceObjInList(list, obj, key) {
+  const index = list.findIndex(item => item[key] === obj[key]);
+  if (index !== -1) {
+    list[index] = obj;
   }
 }
 
@@ -116,7 +124,7 @@ function genNoteItem(n, currentTag) {
   elNoteDelBtn.onclick = async (ev) => {
     ev.stopPropagation();
     if (!confirm('Delete this note?')) return;
-    const ok = await apiDelete(`/api/notes/${n.id}`);
+    const ok = await api(`/api/notes/${n.id}`, {method: "DELETE"});
     if (ok && ok.status === 'deleted') {
       console.log('Note deleted');
       elNoteItem.remove();
@@ -304,21 +312,20 @@ function renderTreeBox() {
   elTreeList.innerHTML = '';
 
   // Filter only project tags with treed === true
-  const projectTags = Object.entries(tags)
-    .filter(([tag, info]) => info.treed === true)
-    .map(([tag, info]) => ({ tag, ...info }));
-
+  const tagsTreed = tags
+    .filter( (tag) => tag.treed === true);
+  
   // Build a map for quick lookup
   const tagMap = {};
-  projectTags.forEach(t => tagMap[t.tag] = { ...t, children: [] });
-
+  tags.forEach(t => tagMap[t.name] = { ...t, children: [] });
+  
   // Build tree structure
   const roots = [];
-  projectTags.forEach(t => {
-    if (!t.parent || !tagMap[t.parent]) {
-      roots.push(tagMap[t.tag]);
+  tagsTreed.forEach(t => {
+    if (!t.parent) {
+      roots.push(tagMap[t.name]);
     } else {
-      tagMap[t.parent].children.push(tagMap[t.tag]);
+      tagMap[t.parent].children.push(tagMap[t.name]);
     }
   });
 
@@ -329,7 +336,7 @@ function renderTreeBox() {
       if (!current.parent) return null;
       current = tagMap[current.parent];
     }
-    return current && current.treed ? current.tag : null;
+    return current && current.treed ? current.name : null;
   }
 
   // Map: tag -> tasks to show under it
@@ -338,11 +345,11 @@ function renderTreeBox() {
   tasks.forEach(note => {
     if (!note.task || note.task === 'none') return;
     // Find all project tags in note
-    const noteTags = (note.tags || []).filter(t => tags[t]);
+    const noteTags = (note.tags || []).filter(notetag => getTag(notetag));
     let placed = false;
     if (noteTags.length > 0) {
-      noteTags.forEach(tag => {
-        const showUnder = tags[tag].treed ? tag : findFirstVisibleAncestor(tag);
+      noteTags.forEach(notetag => {
+        const showUnder = findFirstVisibleAncestor(notetag);
         if (showUnder) {
           if (!tasksByTag[showUnder]) tasksByTag[showUnder] = [];
           tasksByTag[showUnder].push(note);
@@ -350,7 +357,6 @@ function renderTreeBox() {
         }
       });
     }
-    // If no tags or no visible ancestor, show at root
     if (!placed) {
       rootTasks.push(note);
     }
@@ -369,22 +375,27 @@ function renderTreeBox() {
       arrow.textContent = depth < 1 ? '▾' : '▸'; // expanded for root, collapsed for deeper
       arrow.className = 'tree-arrow';
       li.appendChild(arrow);
+    } else {
+      arrow = document.createElement('span');
+      arrow.textContent = '▫'
+      arrow.className = 'tree-arrow';
+      li.appendChild(arrow);
     }
 
     // Tag label
     const tagSpan = document.createElement('span');
-    tagSpan.textContent = node.tag;
+    tagSpan.textContent = node.name;
     tagSpan.className = `tree-tag lbl lbl-${node.category}`;
-    tagSpan.onclick = async () => await addTagview(node.tag);
+    tagSpan.onclick = async () => await addTagview(node.name);
     li.appendChild(tagSpan);
 
     // Show tasks under this tag
-    if (tasksByTag[node.tag]) {
+    if (tasksByTag[node.name]) {
       const taskList = document.createElement('ul');
       taskList.style.listStyle = 'none';
       taskList.style.margin = '4px 0 4px 18px';
       taskList.style.padding = '0';
-      tasksByTag[node.tag].forEach(note => {
+      tasksByTag[node.name].forEach(note => {
         const taskLi = document.createElement('li');
         taskLi.style.margin = '2px 0';
         taskLi.style.padding = '2px 6px';
@@ -396,13 +407,12 @@ function renderTreeBox() {
         else if (note.task === 'low') taskLi.classList.add('task-low');
         // Show a short preview of the note
         taskLi.textContent = '';
-        console.log(note)
         if (note.duedate) {
           taskLi.textContent = note.duedate;
         }
-        taskLi.textContent += note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
+        taskLi.textContent += note.text.length > 30 ? note.text.slice(0, 30) + '…' : note.text;
         taskLi.title = note.text;
-        taskLi.onclick = async () => await addTagview(node.tag);
+        taskLi.onclick = async () => await addTagview(node.name);
         taskList.appendChild(taskLi);
       });
       li.appendChild(taskList);
@@ -454,11 +464,10 @@ function renderTreeBox() {
       else if (note.task === 'mid') taskLi.classList.add('task-mid');
       else if (note.task === 'low') taskLi.classList.add('task-low');
       taskLi.textContent = '';
-      console.log(note)
       if (note.duedate) {
-        taskLi.textContent = "" + note.duedate + "] ";
+        taskLi.textContent = "" + note.duedate + " // ";
       }
-      taskLi.textContent += note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
+      taskLi.textContent += note.text.length > 30 ? note.text.slice(0, 30) + '…' : note.text;
       taskLi.title = note.text;
       taskLi.onclick = async () => await addTagview(note.date);
       topUl.appendChild(taskLi);
@@ -491,34 +500,38 @@ function renderTagsBox(){
     secDiv.appendChild(ul);
     elTagsList.appendChild(secDiv);
   });
-  Object.entries(tags).forEach(([tag, info]) => {
+  tags.forEach((tag) => {
     const li = document.createElement('li');
     li.style.display = 'flex';
     li.style.justifyContent = 'space-between';
     li.style.alignItems = 'center';
 
     const span = document.createElement('span');
-    span.textContent = tag;
+    span.textContent = tag.name;
     span.style.flex = '1';
     span.style.cursor = 'pointer';
-    span.onclick = async () => await addTagview(tag);
+    span.onclick = async () => await addTagview(tag.name);
     li.appendChild(span);
 
     // Eye button for visibility toggle
     const eyeBtn = document.createElement('span');
     eyeBtn.textContent = '👁';
-    eyeBtn.title = info.treed ? 'Visible in tree' : 'Hidden from tree';
-    eyeBtn.style.color = info.treed ? '#2e7d32' : '#c62828';
+    eyeBtn.title = tag.treed ? 'Visible in tree' : 'Hidden from tree';
+    eyeBtn.style.color = tag.treed ? '#2e7d32' : '#c62828';
     eyeBtn.style.marginLeft = '8px';
     eyeBtn.style.cursor = 'pointer';
     eyeBtn.onclick = async (ev) => {
       ev.stopPropagation();
       // PATCH API to toggle treed
-      const updated = await apiPatch(`/api/tags/${info.category}/${tag.substring(1)}/tree`, {
-        treed: !info.treed,
-        parent: info.parent || ''
+      const updated = await api(`/api/tags/${tag.category}/${tag.name.substring(1)}/tree`, {
+        method: "PATCH",
+        body: {
+          treed: !tag.treed,
+          parent: tag.parent || ''
+        }
       });
-      tags[tag] = updated;
+      console.log('updated', updated);
+      replaceObjInList(tags, updated, 'name');
       renderTagsBox();
       renderTreeBox();
     };
@@ -530,14 +543,14 @@ function renderTagsBox(){
     treeEdit.style.color = '#666';
     treeEdit.style.marginLeft = '8px';
     treeEdit.style.cursor = 'pointer';
-    treeEdit.title = `Tree "${tag}"`;
+    treeEdit.title = `Tree "${tag.name}"`;
     treeEdit.onclick = async (ev) => {
       ev.stopPropagation();
-      openEditTreeTagModal(tag);
+      openEditTreeTagModal(tag.name);
     };
     li.appendChild(treeEdit);
 
-    sectionsDiv[info.category].querySelector('ul').appendChild(li);
+    sectionsDiv[tag.category].querySelector('ul').appendChild(li);
   });
   makeCollapsible('tagsBox', 'tagsCollapseBtn', elTagsList, 'Tags');
 }
@@ -685,35 +698,39 @@ function maximizeTab(key) {
 }
 
 /* API calls */
-async function apiGet(url){
-  const res = await fetch(url);
-  return res.json();
-}
-async function apiPost(url, data){
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  return res.json();
-}
-async function apiPatch(url, data) {
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data)
-  });
-  return res.json();
-}
-async function apiDelete(url) {
-  const res = await fetch(url, { method: 'DELETE' });
-  return res.json();
+async function api(url, opts = {}){
+  console.log('[fn] api ' + url)
+  opts.headers = opts.headers || {};
+  if (token()) {
+    opts.headers["Authorization"] = "Bearer " + token();
+  }
+  if (opts.body && typeof opts.body !== "string") {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(url, opts);
+  console.log("[fn] api GET:" + url + " executed", res);
+  if (res.status === 401) {
+    localStorage.removeItem("token");
+    location.hash = "/";
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(()=>({}));
+    throw new Error(err.error?.message || res.statusText);
+  }
+  if (res.status !== 204) {
+    return res.json();
+  }
+  return null;
 }
 
 /* Data management */
 async function loadAndRenderTags(){
-  tags = await apiGet("/api/tags");
-  tasks = await apiGet("/api/tasks");
+  tags = await api("/api/tags");
+  tasks = await api("/api/tasks");
+  console.log('[fn] loadAndRenderTags: Loaded tags', tags);
+  console.log('[fn] loadAndRenderTags: Loaded tasks', tasks);
   renderTagsBox();
   renderTreeBox();
 }
@@ -721,7 +738,7 @@ async function loadNotes(tag){
   console.log('[fn] loadNotes', tag);
   const category = getClassfromTag(tag);
   const anonTag = getAnonymizedTag(tag);
-  const notes = await apiGet(`/api/notes/${category}/${anonTag}`);
+  const notes = await api(`/api/notes/${category}/${anonTag}`);
   return notes;
 }
 async function saveNote(){
@@ -730,12 +747,14 @@ async function saveNote(){
   const date = parseLeadingDate(raw) || (new Date()).toISOString().slice(0,10);
   const noteTags = extractTagsFromText(raw, false);
 
-  const response = await apiPost("/api/notes", {
-    text: raw,
-    date,
-    noteTags
+  const response = await api("/api/notes", {
+    method: 'POST',
+    body: {
+      text: raw,
+      date,
+      noteTags
+    }
   });
-  console.log("API response:", response);
   if(!response || !response.note.id) {
     alert('Error saving note');
     return;
@@ -791,8 +810,10 @@ function openEditModal(note, editCallback=null) {
       return;
     }
     // PATCH API
-    const updated = await apiPatch(`/api/notes/${note.id}`, { text: newText });
-    console.log("API response:", updated);
+    const updated = await api(`/api/notes/${note.id}`, {
+      method: "PATCH",
+      body: { text: newText }
+    });
     if(!updated || !updated.note.id || updated.status != 'patched') {
       alert('Error saving note');
       return;
@@ -806,7 +827,7 @@ function openEditModal(note, editCallback=null) {
 let editTreeTagModal = null;
 function openEditTreeTagModal(tag) {
   console.debug(`[fn] openEditTreeTagModal`, tag);
-  const tagObj = tags[tag];
+  const tagObj = getTag(tag);
   console.debug(`[fn] openEditTreeTagModal`, tagObj);
   if (editTreeTagModal) editTreeTagModal.remove();
   editTreeTagModal = document.createElement('div');
@@ -843,12 +864,14 @@ function openEditTreeTagModal(tag) {
   };
   // Save button
   editTreeTagModal.querySelector('#edit-tree-modal-save').onclick = async () => {
-    const updated = await apiPatch(`/api/tags/${tagObj.category}/${tag.substring(1)}/tree`, {
-      "treed": editTreeTagModal.querySelector('input[name="treedVisible"]:checked').value === 'true',
-      "parent": editTreeTagModal.querySelector('#parentTagInput').value.trim() || null
+    const updated = await api(`/api/tags/${tagObj.category}/${tag.substring(1)}/tree`, {
+      method: "PATCH",
+      body: {
+        "treed": editTreeTagModal.querySelector('input[name="treedVisible"]:checked').value === 'true',
+        "parent": editTreeTagModal.querySelector('#parentTagInput').value.trim() || null
+      }
     });
-    console.log('API response:', updated);
-  
+    
     // Update local tag
     tags[tag] = updated;
     renderTagsBox();
@@ -859,7 +882,7 @@ function openEditTreeTagModal(tag) {
   };
 }
 
-// -------------------- Editor --------------------
+/* Editor */
 function extractTagsFromText(text, trailing_space=true){
   const tagsfound = new Set();
   let tagRx = /([#@>\+])([A-Za-z0-9_\-]+)[ ,\.;:]/g;
@@ -870,16 +893,12 @@ function extractTagsFromText(text, trailing_space=true){
   while((m = tagRx.exec(text)) !== null) {
     tagsfound.add(m[0].trim());
   }
-  console.debug(`Extracted tagsfound from text: [${Array.from(tagsfound).join(', ')}]`);
-  
   return Array.from(tagsfound);
 }
 function parseLeadingDate(text){
   const m = text.trim().match(/^(\d{4}-\d{2}-\d{2})\b/);
   return m ? m[1] : null;
 }
-
-// -------------------- Editor events --------------------
 
 let typingDebounce = null;
 elEditor.addEventListener('input', ()=>{
@@ -968,4 +987,96 @@ document.addEventListener('keydown', (ev) => {
   }
 });
 
+/* Auth */
+function token() {
+  return localStorage.getItem("token");
+}
+async function checkToken() {
+  if (!token()) return false;
+  try {
+    await api("/api/health");
+    return true;
+  } catch {
+    return false;
+  }
+}
 
+/* Routing */
+async function renderLogin() {
+  const valid = await checkToken();
+  if (valid) {
+    location.hash = "/home";
+    return;
+  }
+  elColumnsWrap.innerHTML = '';
+
+  const elColumn = document.createElement('div');
+  elColumn.className = 'column active';
+  elColumnsWrap.appendChild(elColumn);
+
+  const elColCont = document.createElement('div');
+  elColCont.className = 'column-content';
+  elColumn.appendChild(elColCont);
+
+  const elColContDiv = document.createElement('div');
+  elColContDiv.style.padding = '10px';
+  elColCont.appendChild(elColContDiv);
+
+  elColContDiv.innerHTML = `
+    <h1>Sign In</h1>
+    <form id="loginForm">
+      <input name="username" placeholder="Username" required value="admin"/>
+      <input name="password" type="password" placeholder="Password" required value="admin123"/>
+      <button type="submit">Sign In</button>
+      <div class="error" id="loginError"></div>
+    </form>`;
+  const form = document.getElementById("loginForm");
+  const errBox = document.getElementById("loginError");
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    errBox.textContent = "";
+    const data = {
+      username: form.username.value,
+      password: form.password.value
+    };
+    try {
+      const res = await api("/api/auth/signin", {method: "POST", body: data});
+      console.log('[fn] renderLogin ', res)
+      elColumnsWrap.innerHTML = '';
+      localStorage.setItem("token", res.token);
+      location.hash = "/home";
+    } catch (err) {
+      errBox.textContent = err.message;
+    }
+  };
+}
+
+async function router() {
+  const hash = location.hash.replace(/^#/, "") || "/";
+  const valid = await checkToken();
+  console.log(`[fn] router: Token: ${valid}, location:${hash}`);
+  if (!valid) { 
+    if (hash != "/") {
+      location.hash = "/";
+    } else {
+      renderLogin();
+    }
+  }
+  else if (valid) {
+    if (hash === "/") {
+      location.hash = "/home"
+    } else if (hash === "/home") {
+      await loadAndRenderTags();
+      renderJournalBox();
+    } else {
+      app.innerHTML = "<p>Not found</p>";
+    }
+  }
+}
+
+window.addEventListener("hashchange", router);
+
+(async () => {
+  await router();
+}
+)();
