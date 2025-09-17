@@ -5,6 +5,7 @@ let tasks = {}
 
 /* DOM elements */
 const elTagsList = document.getElementById('tagsList');
+const elTagsSubHeader = document.getElementById('tagsSubHeader');
 const elJournalList = document.getElementById('journalList');
 const elTreeList = document.getElementById('treeList');
 const elTabsContainer = document.getElementById('tabsContainer');
@@ -252,7 +253,6 @@ async function addTagview(tag) {
   elNoteList.className = 'notesList scrollable';
   elNoteList.textContent = 'Fetching notes...';
   elNoteList.style.color = '#777';
-  elNoteList.style.padding = '10px';
   elColCont.appendChild(elNoteList);
 
   // Load notes for this tag
@@ -410,7 +410,7 @@ function renderTreeBox() {
         if (note.duedate) {
           taskLi.textContent = note.duedate;
         }
-        taskLi.textContent += note.text.length > 30 ? note.text.slice(0, 30) + '…' : note.text;
+        taskLi.textContent += note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
         taskLi.title = note.text;
         taskLi.onclick = async () => await addTagview(node.name);
         taskList.appendChild(taskLi);
@@ -467,7 +467,7 @@ function renderTreeBox() {
       if (note.duedate) {
         taskLi.textContent = "" + note.duedate + " // ";
       }
-      taskLi.textContent += note.text.length > 30 ? note.text.slice(0, 30) + '…' : note.text;
+      taskLi.textContent += note.text.length > 60 ? note.text.slice(0, 60) + '…' : note.text;
       taskLi.title = note.text;
       taskLi.onclick = async () => await addTagview(note.date);
       topUl.appendChild(taskLi);
@@ -479,50 +479,80 @@ function renderTreeBox() {
 
   makeCollapsible('treeBox', 'treeCollapseBtn', elTreeList, 'Tree');
 }
-function renderTagsBox(){
-  console.log('[fn] renderTagsBox', tags);
-  elTagsList.innerHTML = '';
-  
-  const sectionsDiv = {
-    'Projects': document.createElement('div'),
-    'Persons': document.createElement('div'),
-    'Events': document.createElement('div'),
-    'Generic': document.createElement('div')
-  };
-  Object.entries(sectionsDiv).forEach(([secName, secDiv]) => {
-    secDiv.className = 'tagSection';
-    let title = document.createElement('div');
-    title.className = 'sectionTitle';
-    title.textContent = secName + ': ';
-    secDiv.appendChild(title);
-    let ul = document.createElement('ul');
-    ul.className = 'tagList';
-    secDiv.appendChild(ul);
-    elTagsList.appendChild(secDiv);
-  });
-  tags.forEach((tag) => {
-    const li = document.createElement('li');
-    li.style.display = 'flex';
-    li.style.justifyContent = 'space-between';
-    li.style.alignItems = 'center';
 
+// Funzione helper per trasformare un array piatto in una struttura ad albero nidificata.
+function buildTagTree(flatTags) {
+    const tree = [];
+    const childrenOf = {};
+
+    flatTags.forEach(tag => {
+        childrenOf[tag.name] = { ...tag, children: [] };
+        if (!tag.parent || tag.parent === '') {
+            tree.push(childrenOf[tag.name]);
+        }
+    });
+
+    flatTags.forEach(tag => {
+        if (tag.parent && childrenOf[tag.parent]) {
+            childrenOf[tag.parent].children.push(childrenOf[tag.name]);
+        }
+    });
+
+    return tree;
+}
+
+// Funzione ricorsiva per creare gli elementi HTML del treebox.
+function createTreeElement(tag, tagsEyeActive) {
+    const li = document.createElement('li');
+    li.style.listStyle = 'none'; // Rimuove il proiettile dell'elemento di lista
+    
+    if(!tagsEyeActive && !tag.treed) {
+      li.style.display = "none";
+    }
+
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+
+    const hasChildren = tag.children && tag.children.length > 0;
+    
+    // Toggle button per espandere/contrarre
+    const toggleBtn = document.createElement('i');
+    toggleBtn.className = hasChildren ? 'fa-fw fa-solid fa-angles-right color-grey-4' : 'fa-fw fa-solid fa-angle-right color-grey-2';
+    toggleBtn.style.cursor = hasChildren ? 'pointer' : 'default';
+    toggleBtn.style.marginRight = '5px';
+    toggleBtn.onclick = () => {
+        if (hasChildren) {
+            li.classList.toggle('expanded');
+            if (li.classList.contains('expanded')) {
+                toggleBtn.classList.remove('fa-angles-right');
+                toggleBtn.classList.add('fa-angles-down');
+            } else {
+                toggleBtn.classList.remove('fa-angles-down');
+                toggleBtn.classList.add('fa-angles-right');
+            }
+        }
+    };
+    header.appendChild(toggleBtn);
+
+    // Nome del tag e funzionalità di click
     const span = document.createElement('span');
     span.textContent = tag.name;
     span.style.flex = '1';
     span.style.cursor = 'pointer';
     span.onclick = async () => await addTagview(tag.name);
-    li.appendChild(span);
+    header.appendChild(span);
 
+    // Bottoni aggiuntivi (occhio e matita)
     // Eye button for visibility toggle
-    const eyeBtn = document.createElement('span');
-    eyeBtn.textContent = '👁';
+    const eyeBtn = document.createElement('i');
+    eyeBtn.className = tag.treed ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
     eyeBtn.title = tag.treed ? 'Visible in tree' : 'Hidden from tree';
     eyeBtn.style.color = tag.treed ? '#2e7d32' : '#c62828';
     eyeBtn.style.marginLeft = '8px';
     eyeBtn.style.cursor = 'pointer';
     eyeBtn.onclick = async (ev) => {
       ev.stopPropagation();
-      // PATCH API to toggle treed
       const updated = await api(`/api/tags/${tag.category}/${tag.name.substring(1)}/tree`, {
         method: "PATCH",
         body: {
@@ -530,16 +560,15 @@ function renderTagsBox(){
           parent: tag.parent || ''
         }
       });
-      console.log('updated', updated);
       replaceObjInList(tags, updated, 'name');
       renderTagsBox();
       renderTreeBox();
     };
-    li.appendChild(eyeBtn);
+    header.appendChild(eyeBtn);
 
     // Tree edit button
-    const treeEdit = document.createElement('span');
-    treeEdit.textContent = '✎';
+    const treeEdit = document.createElement('i');
+    treeEdit.className = 'fa-solid fa-pencil';
     treeEdit.style.color = '#666';
     treeEdit.style.marginLeft = '8px';
     treeEdit.style.cursor = 'pointer';
@@ -548,12 +577,122 @@ function renderTagsBox(){
       ev.stopPropagation();
       openEditTreeTagModal(tag.name);
     };
-    li.appendChild(treeEdit);
+    header.appendChild(treeEdit);
+    
+    li.appendChild(header);
 
-    sectionsDiv[tag.category].querySelector('ul').appendChild(li);
-  });
-  makeCollapsible('tagsBox', 'tagsCollapseBtn', elTagsList, 'Tags');
+    // Crea la lista dei figli (se esistono)
+    if (hasChildren) {
+        const ul = document.createElement('ul');
+        ul.className = 'tagList-tree';
+        tag.children.forEach(child => {
+            ul.appendChild(createTreeElement(child, tagsEyeActive));
+        });
+        li.appendChild(ul);
+    }
+    
+    return li;
 }
+
+const o = {
+  TagsBox: {
+    el: document.getElementById('tagsBox'),
+    parent: 'leftbar',
+    vars: {
+      eye: false,
+      tasks: false
+    },
+    render() {
+      this.el.innerHTML = '';
+      this.el.appendChild(o.TagsBoxHeader.render());
+      this.el.appendChild(o.TagsBoxSubHeader.render());
+      this.el.appendChild(o.TagsBoxList.render());
+    }
+  },
+  TagsBoxHeader: {
+    el: null,
+    render () {
+      if (this.el == null) { this.el = document.createElement('button') }
+      this.el.innerHTML = '';
+      this.el.id = "tagsCollapseBtn";
+      this.el.style = "display:block; width:100%;background:none;border:none;cursor:pointer;font-size:1.2em;z-index:2;";
+      this.el.innerHTML = 'Tags <i class="fa fa-solid fa-fw fa-caret-down"></i>';
+      return this.el;
+    }
+  },
+  TagsBoxSubHeader: {
+    el: null,
+    render () {
+      if (this.el == null) { this.el = document.createElement('div') }
+      this.el.innerHTML = '';
+      this.el.id = "tagsSubHeader";
+      this.el.style = "margin: 10px 0px;";
+      
+      const elTagsEye = document.createElement('button');
+      elTagsEye.id = 'tagsEye';
+      elTagsEye.className="btnp primary";
+      elTagsEye.innerHTML = '<i class="fa fa-fw fa-eye"></i>';
+      elTagsEye.onclick = (ev) => {
+        ev.preventDefault();
+        elTagsEye.classList.toggle('active');
+        o.TagsBox.vars.eye = !o.TagsBox.vars.eye;
+        o.TagsBoxList.render();
+      };
+      this.el.appendChild(elTagsEye);
+
+      const elTagsTasks = document.createElement('button');
+      elTagsTasks.className="btnp primary";
+      elTagsTasks.innerHTML = '<i class="fa fa-fw fa-exclamation fa-solid"></i>';
+      elTagsTasks.onclick = (ev) => {
+        ev.preventDefault();
+        elTagsTasks.classList.toggle('active');
+        o.TagsBox.vars.tasks = !o.TagsBox.vars.tasks;
+        o.TagsBoxList.render();
+      };
+      this.el.appendChild(elTagsTasks);
+      return this.el;
+    }
+  },
+  TagsBoxList: {
+    el: null,
+    render() {
+      if (this.el == null) { this.el = document.createElement('div') }
+      console.log('[fn] renderTagsList', tags);
+      this.el.innerHTML = '';
+      this.el.className = 'scrollable';
+
+      const sectionsDiv = {
+          'Tags': document.createElement('div'),
+          'Persons': document.createElement('div')
+      };
+
+      Object.entries(sectionsDiv).forEach(([secName, secDiv]) => {
+        secDiv.className = 'tagSection';
+        let title = document.createElement('div');
+        title.className = 'sectionTitle';
+        title.textContent = secName + ': ';
+        secDiv.appendChild(title);
+        let ul = document.createElement('ul');
+        ul.className = 'tagList-tree';
+        secDiv.appendChild(ul);
+        this.el.appendChild(secDiv);
+      });
+      const tagTree = buildTagTree(data.tags.get().filter( tag => tag.category != "Persons"));      
+      tagTree.forEach(tag => {
+        const li = createTreeElement(tag, o.TagsBox.vars.eye);
+        if (li != null) sectionsDiv['Tags'].querySelector('ul').appendChild(li);
+      });
+      const personTree = buildTagTree(data.tags.get().filter( tag => tag.category == "Persons"));
+      personTree.forEach(tag => {
+        const li = createTreeElement(tag, o.TagsBox.vars.eye);
+        if (li != null) sectionsDiv['Persons'].querySelector('ul').appendChild(li);
+      });
+      makeCollapsible('tagsBox', 'tagsCollapseBtn', this.el, 'Tags');
+      return this.el;
+    }
+  }
+}
+
 function activateTagview(key){
   console.log('[fn] activateTagview', key);
   
@@ -725,6 +864,21 @@ async function api(url, opts = {}){
   return null;
 }
 
+const data = {
+  tags: {
+    _v: null,
+    get() {
+      if(this._v == null) {
+        throw new Error('tags not loaded yet');
+      }
+      return this._v;
+    },
+    async load() {
+      this._v = await api("/api/tags");
+    }
+  }
+}
+
 /* Data management */
 async function loadAndRenderTags(){
   tags = await api("/api/tags");
@@ -847,7 +1001,7 @@ function openEditTreeTagModal(tag) {
       </div>
       <div style="margin-bottom: 12px;">
         <label for="parentTagInput">Parent Tag:</label>
-        <input type="text" id="parentTagInput" class="modal-parent-input" value="${tagObj.parent.replace(/"/g, '&quot;') || ''}" placeholder="Enter parent tag">
+        <input type="text" id="parentTagInput" class="modal-parent-input" value="${tagObj.parent == null ? '' : tagObj.parent.replace(/"/g, '&quot;') || ''}" placeholder="Enter parent tag">
       </div>
       <div class="modal-actions">
         <button id="edit-tree-modal-cancel">Cancel</button>
@@ -1066,7 +1220,8 @@ async function router() {
     if (hash === "/") {
       location.hash = "/home"
     } else if (hash === "/home") {
-      await loadAndRenderTags();
+      await data.tags.load();
+      o.TagsBox.render();
       renderJournalBox();
     } else {
       app.innerHTML = "<p>Not found</p>";

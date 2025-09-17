@@ -6,13 +6,14 @@
   --bg: #fff;
   --muted: #666;
   --border: #ccc;
-  font-size: 10px;
+  font-size: 0.9rem;
 }
 
 * {
   box-sizing:border-box;
 }
-html { overflow: hidden;
+html {
+  overflow: hidden;
 } 
 html,body,#app {
   height:100%;
@@ -46,21 +47,13 @@ body {
 .box {
   padding:6px;
   border-bottom:1px solid var(--border);
-  flex:1;
   display:flex;
   flex-direction:column;
-}
-.box.small {
-  height:200px;
-  flex:0 0 200px;
+  flex: 1;
 }
 .box h3 {
   margin:0 0 8px 0;
   font-size:14px;
-}
-#treeBox {
-  flex: 1 1 auto;  /* grow to fill leftover space */
-  min-height: 0;   /* allow flex child to shrink */
 }
 
 .scrollable {
@@ -201,12 +194,12 @@ body {
 
 .column {
   padding: 14px;
-  min-width: 400px;
+  min-width: 500px;
   display: flex;
   flex-direction: column;
   height: 100%;
-  flex: 0 0 400px;
-  width: 400px;
+  flex: 0 0 500px;
+  width: 500px;
 }
 
 .column-content {
@@ -232,6 +225,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  border-bottom: 1px solid #f2f2f2;
 }
 .noteItem:hover {
   background:#f8fbff;
@@ -336,6 +330,7 @@ code {
 }
 #leftbar .box {
   position: relative;
+  min-height: 0;
 }
 #leftbar .box h3 {
   display: flex;
@@ -373,6 +368,8 @@ code {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  height: 70%;
+  width: 70%;
 }
 .modal-content h3 {
   margin: 0 0 8px 0;
@@ -386,6 +383,7 @@ code {
   border-radius: 6px;
   border: 1px solid #ccc;
   resize: vertical;
+  flex: 1;
 }
 .modal-actions {
   display: flex;
@@ -579,3 +577,36 @@ code {
   border-color: var(--primary);
   box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
 }
+/* CSS per il tagList tree */
+.tagList-tree {
+  list-style: none; /* Rimuovi i pallini di default */
+  padding-left: 1em; /* Indentazione per i livelli successivi */
+}
+
+/* Nascondi i figli per default */
+.tagList-tree ul {
+  display: none;
+}
+
+/* Mostra i figli quando il genitore è espanso */
+.tagList-tree li.expanded > ul {
+  display: block;
+}
+
+/* Stile per i toggle button */
+.tree-toggle {
+  font-family: monospace;
+  font-weight: bold;
+}
+.color-grey-5 {color: #000000;}
+.color-grey-4 {color: #626262;}
+.color-grey-3 {color: #a1a1a1;}
+.color-grey-2 {color: #c4c4c4;}
+.color-grey-1 {color: #ededed;}
+.pointer{ cursor: pointer }
+
+.color-bg-blue-5 {color: #3812e1;}
+.color-bg-blue-4 {color: #522bff;}
+.color-bg-blue-3 {color: #522bff;}
+.color-bg-blue-2 {color: #522bff;}
+.color-bg-blue-1 {color: #522bff;}

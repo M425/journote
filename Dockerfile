@@ -13,10 +13,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py /app/app.py
-
-# Data volume (bind a host dir for persistence)
-RUN mkdir -p /data
-VOLUME ["/data"]
+COPY static /app/static
 
 EXPOSE 8000
 

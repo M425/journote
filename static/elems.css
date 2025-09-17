@@ -1,0 +1,35 @@
+:root {
+  --c-standard: #f3f1f5;
+  --c-primary: #1976d2;
+  --c-secondary: #2fdbd8;
+  --c-warning: #ebe046;
+  --c-error: #d34e4e;
+}
+
+button           {
+  padding: 3px;
+  border: 1px solid #aaaaaa;
+  border-radius: 3px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+button:hover     { filter: brightness(105%) }
+
+button.btn           { background: var(--c-standard) }
+button.btn.primary   { background: var(--c-primary) }
+button.btn.secondary { background: var(--c-secondary) }
+button.btn.warning   { background: var(--c-warning) }
+button.btn.error     { background: var(--c-error) }
+
+button.btnp.primary   { background: var(--c-standard) }
+button.btnp.secondary { background: var(--c-standard) }
+button.btnp.warning   { background: var(--c-standard) }
+button.btnp.error     { background: var(--c-standard) }
+
+button.btnp.primary.active   { background: var(--c-primary); color: white; }
+button.btnp.secondary.active { background: var(--c-secondary); color: white;  }
+button.btnp.warning.active   { background: var(--c-warning); color: white;  }
+button.btnp.error.active     { background: var(--c-error); color: white;  }
+
+

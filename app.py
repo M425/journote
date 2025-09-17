@@ -42,65 +42,57 @@ TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "7200"))  # 2 hours
 
 # ------------------ Data ------------------
 class FileBackedStore:
-    def __init__(self, file_path: str, search_key: str):
+    def __init__(self, name: str, file_path: str, search_key: str):
+        self._name = name
         self.file_path = file_path
         self._lock = threading.RLock()
         self._data: Dict[str, Any] = {}
-        self._ensure_dir()
         self._load()
         self._search_key = search_key
-        logger.info(f"FileBackedStore: initialized with {self.file_path}")
-
-    def _ensure_dir(self):
-        """Ensure storage directory exists."""
-        d = os.path.dirname(os.path.abspath(self.file_path))
-        if d and not os.path.exists(d):
-            os.makedirs(d, exist_ok=True)
+        logger.info(f"FileBackedStore[{self._name}] (init) Initialized with {self.file_path}")
 
     def _load(self):
         """Load data from file or initialize default state."""
         if not os.path.exists(self.file_path):
-            logger.info("Data file not found, initializing with default admin user")
+            logger.info(f"FileBackedStore[{self._name}] (load) Data file '{self.file_path}' not found in {os.getcwd()}, initializing with default admin user")
             self._data = []
             self._save()
             return
-        logger.info(f"Loading data from {self.file_path}")
+        logger.info(f"FileBackedStore[{self._name}] (load) Loading data from {self.file_path}")
         with open(self.file_path, "r", encoding="utf-8") as f:
             self._data = json.load(f)
 
     def _save(self):
         """Atomic write: write to temp file then replace."""
-        logger.debug(f"Persisting data to {self.file_path}")
-        tmp = f"{self.file_path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        logger.debug(f"FileBackedStore[{self._name}] (save) Persisting data to {self.file_path}")
+        with open(self.file_path, "w", encoding="utf-8") as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, self.file_path)
 
     def find_by_id(self, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore: find_by_id: {value_to_search}")
+        logger.debug(f"FileBackedStore[{self._name}] (find_by_id) value_to_search='{value_to_search}'")
         with self._lock:
             return next((u for u in self._data if u[self._search_key] == value_to_search), None)
 
     def find_eq(self, key_to_search: str, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore: find_eq: {key_to_search}: {value_to_search}")
+        logger.debug(f"FileBackedStore[{self._name}] (find_eq) key_to_search='{key_to_search}', value_to_search='{value_to_search}'")
         with self._lock:
             return [u for u in self._data if value_to_search == u[key_to_search]]
 
     def find_in_list(self, key_to_search: str, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore: find_in_list: {key_to_search}: {value_to_search}")
+        logger.debug(f"FileBackedStore[{self._name}] (find_in_list) key_to_search='{key_to_search}', value_to_search='{value_to_search}'")
         with self._lock:
             return [u for u in self._data if value_to_search in u[key_to_search]]
 
 
     def find_any(self, key_to_search: str, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore: find_in_list: {key_to_search}: {value_to_search}")
+        logger.debug(f"FileBackedStore[{self._name}] (find_any) key_to_search='{key_to_search}', value_to_search='{value_to_search}'")
         with self._lock:
             return [u for u in self._data if u.get(key_to_search) in value_to_search]
             
     def find_all(self) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore: find_all:")
+        logger.debug(f"FileBackedStore[{self._name}] (find_all)")
         return self._data
         
     def _find_entity_index(self, key: str) -> Optional[int]:
@@ -110,10 +102,10 @@ class FileBackedStore:
         return None
 
     def add(self, obj: Dict) -> Dict[str, Any]:
-        logger.info(f"FileBackedStore: Add: {obj[self._search_key]}")
+        logger.info(f"FileBackedStore[{self._name}] (add) '{obj[self._search_key]}'")
         with self._lock:
             if self.find_by_id(obj[self._search_key]):
-                logger.warning(f"Attempt to add existing object")
+                logger.warning(f"FileBackedStore[{self._name}] (add) Attempt to add existing object")
                 raise ValueError("Already exists.")
             # user = {"username": username, "password_hash": generate_password_hash(password_plain)}
             self._data.append(obj)
@@ -121,11 +113,11 @@ class FileBackedStore:
         return obj
 
     def delete(self, key: str) -> None:
-        logger.info(f"FileBackedStore: {key}")
+        logger.info(f"FileBackedStore[{self._name}] (delete) '{key}'")
         with self._lock:
             idx = self._find_entity_index(key)
             if idx is None:
-                logger.warning(f"FileBackedStore: id={key} not found for delete")
+                logger.warning(f"FileBackedStore[{self._name}] (delete) id='{key}' not found for delete")
                 raise KeyError("Object not found.")
             elem = self._data[idx]
             del self._data[idx]
@@ -133,11 +125,11 @@ class FileBackedStore:
             return elem
 
     def patch(self, key: str, obj: Dict) -> Dict[str, Any]:
-        logger.info(f"FileBackedStore: Patching {key}")
+        logger.info(f"FileBackedStore[{self._name}] (patch) '{key}'")
         with self._lock:
             idx = self._find_entity_index(key)
             if idx is None:
-                logger.warning(f"FileBackedStore: id={key} not found for delete")
+                logger.warning(f"FileBackedStore[{self._name}] (patch) id='{key}' not found for patch")
                 raise KeyError("Object not found.")
             current = dict(self._data[idx])
             for k, v in obj.items():
@@ -147,9 +139,9 @@ class FileBackedStore:
             self._save()
             return current
 
-STORE_USERS = FileBackedStore(USER_FILE, 'username')
-STORE_NOTES = FileBackedStore(NOTES_FILE, 'id')
-STORE_TAGS = FileBackedStore(TAGS_FILE, 'name')
+STORE_USERS = FileBackedStore('users', USER_FILE, 'username')
+STORE_NOTES = FileBackedStore('notes', NOTES_FILE, 'id')
+STORE_TAGS = FileBackedStore('tags', TAGS_FILE, 'name')
 
 # ------------------ Auth ------------------
 
@@ -297,6 +289,12 @@ def health():
     logger.info("Health check requested")
     return jsonify({"status": "ok", "time": datetime.now(timezone.utc).astimezone(timezone.utc).isoformat()})
 
+def get_children(tag):
+    children = [x['name'] for x in STORE_TAGS.find_eq('parent', tag)]
+    for c in children:
+        children += get_children(c)
+    return children
+
 @app.route("/api/notes/<category>/<anonTag>", methods=["GET"])
 @auth_required
 def api_get_tagged_notes(category, anonTag):
@@ -310,7 +308,16 @@ def api_get_tagged_notes(category, anonTag):
     if category not in CATEGORIES:
         return jsonify({"error": "Invalid category"}), 400
     tag = CATEGORIES[category] + anonTag
-    return jsonify(STORE_NOTES.find_in_list('tags', tag))
+    children = set(get_children(tag))
+    notes = STORE_NOTES.find_in_list('tags', tag)
+    for c in list(children):
+        notes += STORE_NOTES.find_in_list('tags', c)
+    logger.info(notes)
+    notes = {item['id']: item for item in notes}
+    notes = list(notes.values())
+    notes = sorted(notes, key=lambda x: (x["date"], x["timestamp"]))
+
+    return jsonify(notes)
 
 @app.route("/api/notes", methods=["POST"])
 @auth_required
@@ -318,7 +325,7 @@ def api_add_note():
     data = request.get_json()
     if not data or "text" not in data:
         return jsonify({"error": "Missing text"}), 400
-
+    tags = find_tag_in_text(data['text'])
     priority, duedate, cleaned_text = extract_task_priority(data["text"])
     note = {
         "id": str(uuid.uuid4()),
@@ -326,15 +333,23 @@ def api_add_note():
         "date": data.get("date") or datetime.now().date().isoformat(),
         "text": cleaned_text,
         "task": priority,
+        "tags": tags,
         "duedate": duedate
     }
     STORE_NOTES.add(note)
+    for tag in tags:
+        if STORE_TAGS.find_by_id(tag) is None:
+            STORE_TAGS.add({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None})
     return jsonify({"status": "created", "note": note}), 201
 
 @app.route("/api/notes/<note_id>", methods=["DELETE"])
 @auth_required
 def api_delete_note(note_id):
-    STORE_NOTES.delete(note_id)
+    note = STORE_NOTES.delete(note_id)
+    removed_tags = []
+    for tag in note['tags']:
+        if STORE_NOTES.find_in_list('tags', tag) is None:
+            removed_tags.append(tag)
     return jsonify({"status": "deleted", "removed_tags": removed_tags})
 
 @app.route("/api/notes/<note_id>", methods=["PATCH"])
@@ -355,6 +370,7 @@ def api_patch_note(note_id):
     old_tags = note["tags"]
     note["text"] = cleaned_text
     note["tags"] = find_tag_in_text(cleaned_text)
+    STORE_NOTES.patch(note_id, note)
 
     added_tags, removed_tags = compare_tags(old_tags, note["tags"])
     logger.info(f"Added tags: {added_tags}, Removed tags: {removed_tags}")
@@ -364,7 +380,7 @@ def api_patch_note(note_id):
             any_new_tag.append(STORE_TAGS.add({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None}))
     any_removed_tag = []
     for tag in removed_tags:
-        if STORE_TAGS.find_in_list('tags', tag):
+        if len(STORE_NOTES.find_in_list('tags', tag)) == 0:
             any_removed_tag.append(STORE_TAGS.delete(tag))
     return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
 
@@ -422,7 +438,13 @@ def signout():
         _TOKENS.pop(getattr(g, "current_token", ""), None)
     return jsonify({"status": "signed_out"}), 200
 
-# ------------------ Main ------------------
 
-logger.info("Starting journote app...")
-app.run(host="0.0.0.0", port=8000, debug=True)
+# ---------------------------
+# Dev entrypoint
+# ---------------------------
+if __name__ == "__main__":
+    # Local dev: runs Flask's reloader if FLASK_DEBUG=1 (default here)
+    port = int(os.getenv("PORT", "8000"))
+    debug = os.getenv("FLASK_DEBUG", "1") == "1"
+    print(f"Starting Flask on 0.0.0.0:{port} (debug={debug}), DATA_FILE={DEFAULT_DATA_FILE}")
+    app.run(host="0.0.0.0", port=port, debug=debug)
