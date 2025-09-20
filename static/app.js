@@ -144,8 +144,8 @@ const page = {
         <div id="LoginWrap">
           <h1>Sign In</h1>
           <form id="loginForm" class="myform">
-            <input name="username" placeholder="Username" required value="admin"/>
-            <input name="password" type="password" placeholder="Password" required value="admin123"/>
+            <input name="username" placeholder="Username" required value=""/>
+            <input name="password" type="password" placeholder="Password" required value=""/>
             <button type="submit" class="btn primary">Sign In</button>
             <div class="error" id="loginError"></div>
           </form>
