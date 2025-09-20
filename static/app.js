@@ -19,9 +19,9 @@ const helper = {
   },
   extractTagsFromText(text, trailing_space=true) {
     const tagsfound = new Set();
-    let tagRx = /([#@>\+])([A-Za-z0-9_\-]+)[ ,\.;:]/g;
+    let tagRx = /([#@>\+])([A-Za-z0-9_\-\.]+)[ ,\.;:]/g;
     if (!trailing_space) {
-      tagRx = /([#@>\+])([A-Za-z0-9_\-]+)/g;
+      tagRx = /([#@>\+])([A-Za-z0-9_\-\.]+)/g;
     }
     let m;
     while((m = tagRx.exec(text)) !== null) {
