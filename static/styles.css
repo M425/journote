@@ -6,15 +6,13 @@
   --bg: #fff;
   --muted: #666;
   --border: #ccc;
-  font-size: 0.9rem;
+  font-size: 10px;
 }
 
 * {
   box-sizing:border-box;
 }
-html {
-  overflow: hidden;
-} 
+html {} 
 html,body,#app {
   height:100%;
   margin:0;
@@ -31,69 +29,24 @@ body {
   height:100vh;
   border:1px solid var(--border);
   background:var(--bg);
+  overflow: hidden;
 }
-#leftbar {
-  width:var(--left-width);
-  min-width:var(--left-width);
-  border-right:1px solid var(--border);
+
+#LeftBar {
+  flex: 0 0 200px;
   display:flex;
   flex-direction:column;
   gap:0;
-  background:#fafafa;
-  height: 100vh; /* full window height */
-  overflow: hidden; /* prevent spilling */
-
+  background:#eeeeee;
+  border-right: 1px solid #d9d9d9;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 10px;
 }
+
 .box {
-  padding:6px;
-  border-bottom:1px solid var(--border);
   display:flex;
   flex-direction:column;
-  flex: 1;
-}
-.box h3 {
-  margin:0 0 8px 0;
-  font-size:14px;
-}
-
-.scrollable {
-  overflow:scroll;
-}
-.scrollable::-webkit-scrollbar {
-  width:12px;
-}
-.scrollable::-webkit-scrollbar-track {
-  background:none;
-}
-.scrollable::-webkit-scrollbar-thumb {
-  background:#bdbdbd;
-  border-radius:6px;
-  border:3px solid #eee;
-}
-
-.scrollable-x {
-  overflow: scroll;
-}
-.scrollable-x::-webkit-scrollbar {
-  height:12px;
-  background: none;
-}
-.scrollable-x::-webkit-scrollbar-track {
-  background:none;
-}
-.scrollable-x::-webkit-scrollbar-thumb {
-  background:#bdbdbd;
-  border-radius:6px;
-  border:5px solid rgba(255,255,255,0.7);
-}
-
-/* Tags list */
-.tagSection {
-  margin-bottom:10px;
-}
-.tagSection .sectionTitle {
-  font-weight:700;
-  margin-bottom:1px;
 }
 .tagList {
   list-style:none;
@@ -109,35 +62,44 @@ body {
   background:#eef6ff;
 }
 
-/* Main area */
-#main {
-  flex:1;
-  display:flex;
-  flex-direction:column;
-  height:100%
+/* Tags list */
+.tagSection {
+  margin-bottom:10px;
 }
-#topbar {
+.tagSection .sectionTitle {
+  font-weight:700;
+  margin-bottom:1px;
+}
+
+/* Main area */
+#Main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden; /* prevent global scroll */
+}
+#TopBar {
   display:flex;
   align-items:center;
-  border-bottom:1px solid var(--border);
-  gap:0px;
-  background:linear-gradient(#ffffff,#fbfdff);
+  gap:10px;
+  flex: 0;
+  padding: 10px;
+  background: #eeeeee;
 }
 .plus {
   background:#3b9a66;
   padding:7px;
   border-radius:6px;
 }
-#tabsContainer {  
+#TopBarContainer {  
   display: flex;
   flex-direction: row;
-  gap: 1px;
+  gap: 10px;
   align-items: flex-start;
   height: 100%;
-  overflow-x: scroll;
   overflow-y: hidden;
-  width: calc(100vw - var(--left-width));
-  max-width: calc(100vw - var(--left-width));
+  scrollbar-width: thin;
 }
 
 /* Pills inside tabs container */
@@ -146,7 +108,6 @@ body {
   align-items:center;
   gap:8px;
   padding: 7px 4px 7px 7px;
-  margin: 12px 6px 0px 6px;
   border-radius:6px;
   background:#e6f1ff;
   color:#034a8f;
@@ -179,27 +140,28 @@ body {
 
 
 /* Columns area */
-.columns {
+#ColumnsWrap {
+  flex: 1;
+  display: flex;           /* use flex row, not grid */
+  align-items: stretch;
+  overflow-x: auto;        /* horizontal scroll */
+  overflow-y: hidden;
+  height: 100%;
+  scrollbar-width: thin;
   display: flex;
   flex-direction: row;
-  gap: 0;
-  align-items: flex-start;
-  height: 100%;
-  overflow-x: scroll;
-  overflow-y: hidden;
-  width: calc(100vw - var(--left-width));
-  max-width: calc(100vw - var(--left-width));
+  gap: 1.5em;
   background: #eeeeee;
+  padding: 10px;
 }
 
 .column {
-  padding: 14px;
-  min-width: 500px;
+  flex: 0 0 320px;         /* fixed width, adjust as you like */
+  min-width: 280px;        /* ensure a minimum */
+  max-width: 600px;        /* optional: prevent them from being too wide */
+  height: 100%;
   display: flex;
   flex-direction: column;
-  height: 100%;
-  flex: 0 0 500px;
-  width: 500px;
 }
 
 .column-content {
@@ -211,21 +173,22 @@ body {
   background: white;
   box-shadow: 0px 2px 6px #999;
 }
+
 .notesList {
   flex: 1 1 auto;
   overflow-y: auto;
-  min-height: 0;
-  max-height: calc(100% - 48px); /* adjust if needed for header height */
+  display: flex;
+  flex-direction: column;
 }
 .columnHeader {
   padding: 10px; font-weight:500; font-size: 1.2em;
 }
 .noteItem {
-  padding:2px 8px;
+  padding:2px 5px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid #f2f2f2;
+  border-bottom: 1px solid #aaaaaa;
 }
 .noteItem:hover {
   background:#f8fbff;
@@ -287,15 +250,14 @@ body {
 }
 
 /* Editor area */
-#editorWrap {
-  border-top:1px solid var(--border);
+#EditorWrap {
   padding:10px;
-  background:#fff;
+  background:#eeeeee;
   display:flex;
   gap:10px;
   align-items:flex-start;
 }
-#editor {
+#Editor {
   resize:none;
   height:120px;
   flex:1;
@@ -304,18 +266,17 @@ body {
   border-radius:6px;
   font-size:1.1em;
 }
-#editorControls {
-  display:flex;
-  flex-direction:column;
-  gap:8px;
-  align-items:flex-end;
+#EditorCtrl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
 }
-#saveBtn {
+#EditorSaveBtn {
   padding:8px 12px;
   border-radius:6px;
   border:0;
-  background:var(--pill-blue);
-  color:white;
+  flex: 1;
   cursor:pointer;
 }
 .hint {
@@ -328,24 +289,13 @@ code {
   padding:2px 4px;
   border-radius:4px;
 }
-#leftbar .box {
+#LeftBar .box {
   position: relative;
-  min-height: 0;
 }
-#leftbar .box h3 {
+#LeftBar .box h3 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-#leftbar .box.collapsed {
-  height: 32px !important;
-  min-height: 32px !important;
-  max-height: 32px !important;
-  overflow: hidden;
-  padding-bottom: 0;
-}
-#leftbar .box.collapsed h3 {
-  margin-bottom: 0;
 }
 
 /* Modal styles */
@@ -354,7 +304,7 @@ code {
   top: 0; left: 0; right: 0; bottom: 0;
   background: rgba(0,0,0,0.25);
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
   z-index: 1000;
 }
@@ -368,8 +318,10 @@ code {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  height: 70%;
-  width: 70%;
+  flex: 1;
+  min-height: 320px;
+  max-height: 90vh;
+  margin: 10vh
 }
 .modal-content h3 {
   margin: 0 0 8px 0;
@@ -381,9 +333,9 @@ code {
   font-size: 1em;
   padding: 8px;
   border-radius: 6px;
+  flex: 1;
   border: 1px solid #ccc;
   resize: vertical;
-  flex: 1;
 }
 .modal-actions {
   display: flex;
@@ -454,6 +406,7 @@ code {
   display: inline-block;
   width:10px;
 }
+
 .tree-tag {
   transition: background 0.2s;
   cursor: pointer;
@@ -480,21 +433,22 @@ code {
 .task-low  { background: #fffdef; border: 1px solid  #e9e6cc; }
 /* Add to your CSS file */
 .column.maximized {
-  position: fixed;
-  top: 0;
-  left: var(--left-width);
-  z-index: 9999;
-  width: calc(100vw - var(--left-width)) !important;
-  max-height: calc(100vh - 140px) !important;
-  height: 100vh !important;
-  background: #fff;
-  box-shadow: 0 0 24px rgba(0,0,0,0.2);
-  overflow: auto;
+    position: fixed !important;
+    top: 2vh;
+    z-index: 9999;
+    width: 96vw !important;
+    height: 100vh !important;
+    height: 96vh !important;
+    background: #fff;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.9);
+    overflow: auto;
+    left: 3vh;
+    max-width: unset;
 }
 .column.active .column-content {
-    box-shadow: 0px 4px 16px #909dde;
+    box-shadow: 0px 2px 4px 1px #398dd4
 }
-#journalList .calendar-header {
+.calendar-header {
   margin-bottom: 5px;
   font-weight: 600;
   font-size: 1.1em;
@@ -503,9 +457,10 @@ code {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 5px;
+  flex: 0;
 }
-#journalList .calendar-nav-btn {
-  background: none;
+.calendar-nav-btn {
+  background: #f8f8f8;
   border: none;
   font-size: 1.5em;
   cursor: pointer;
@@ -513,70 +468,108 @@ code {
   border-radius: 4px;
   transition: background 0.2s;
 }
-#journalList .calendar-nav-btn:hover {
+.calendar-extra {
+  flex: 0;
+}
+.calendar-nav-btn:hover {
   background: #e3f2fd;
 }
-#journalList .calendar-month-label {
+.calendar-month-label {
   font-weight: 600;
   font-size: 1.1em;
 }
-#journalList .calendar-table {
+.calendar-table {
   width: 100%;
   border-collapse: collapse;
+  flex: 1;
 }
-#journalList .calendar-table th {
+.calendar-table th {
   text-align: center;
   vertical-align: top;
-  border: 1px solid #ddd;
+  border: 1px solid #dddddd00;
   padding: 3px;
   position: relative;
   width: 14.28%;
 }
-#journalList .calendar-table td {
+.calendar-table td {
   text-align: center;
   vertical-align: top;
   border: 1px solid #ddd;
   padding: 3px;
   position: relative;
 }
-#journalList .calendar-cell {
+.calendar-cell {
   cursor: pointer;
   padding: 2px;
+  background: #ffffff;
 }
-#journalList .calendar-today {
-  background: #dbefde !important;
+.calendar-cell-empty {
+  background: #dcdcdc;
 }
-#journalList .calendar-weekend {
-  background: #d3d3d3;
+.calendar-today {
+  background: #e2ffe7 !important;
 }
-#journalList .calendar-cell:hover {
+.calendar-weekend {
+  background: #e8e8e8;
+}
+.calendar-cell:hover {
   background: #e3f2fd;
 }
 .duedate {
   color: red;
   margin-left: 10px;
 }
-#loginForm form {
+#LoginMain {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  gap: 3em;
+}
+#LoginWrap {
+  max-height: 600px;
+  min-height: 300px;
+  height: 50vh;
+  max-width: 600px;
+  min-width: 300px;
+  width: 50vw;
+  border: 1px solid #c9c9c9;
+  border-radius: 10px;
+  box-shadow: 0px 2px 3px #c9c9c9;
+  margin: auto;
+  display: flex;
+  padding: 3em;
+  flex-direction: column;
+  gap: 1em;
+}
+.myform {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   padding: 0.2rem;
+  gap: 1em;
 }
-#loginForm input,
-#loginForm select,
-#loginForm button {
-  padding: 0.3rem;
-  font-size: 1rem;
-  border-radius: var(--radius);
+.myform input,
+.myform select,
+.myform button {
+  padding: 1em;
+  font-size: 1em;
+  border-radius: 0.5em;
   border: 1px solid var(--border);
   width: 100%;
 }
-#loginForm input:focus,
-#loginForm select:focus {
+.myform input[type=radio] {
+  width: 30px;
+}
+.myform input:focus,
+.myform select:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
 }
+
 /* CSS per il tagList tree */
 .tagList-tree {
   list-style: none; /* Rimuovi i pallini di default */
@@ -592,6 +585,9 @@ code {
 .tagList-tree li.expanded > ul {
   display: block;
 }
+#TagsBox .tagList-task {
+  margin-left:1em;
+}
 
 /* Stile per i toggle button */
 .tree-toggle {
@@ -603,10 +599,54 @@ code {
 .color-grey-3 {color: #a1a1a1;}
 .color-grey-2 {color: #c4c4c4;}
 .color-grey-1 {color: #ededed;}
-.pointer{ cursor: pointer }
 
-.color-bg-blue-5 {color: #3812e1;}
-.color-bg-blue-4 {color: #522bff;}
-.color-bg-blue-3 {color: #522bff;}
-.color-bg-blue-2 {color: #522bff;}
-.color-bg-blue-1 {color: #522bff;}
+#TagsBoxSubHeader {
+  margin: 10px 0px;
+  display: flex;
+  gap: 1em;
+  flex-direction: row;
+  justify-content: center;
+}
+#LeftBarResizer {
+  background: transparent;
+}
+#LeftBarResizer:hover {
+  background: rgba(0,0,0,0.1);
+}
+
+.navBtnsWrap {
+  padding-bottom: 12px;
+  display: flex;
+  gap: 10px;
+}
+.navBtns {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 22px;
+  padding: 4px 8px;
+}
+.navBtns:hover {
+  background: rgba(0,0,0,0.05);
+  border-radius: 4px;
+}
+
+.ColumnResizer {
+  background: transparent;
+}
+.ColumnResizer:hover {
+  background: rgba(0,0,0,0.1);
+}
+
+#CalendarWrap {
+  padding: 1.5em;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap:1em;
+}
+#CalendarMain {
+  background: #eeeeee;
+  display: flex;
+  flex-direction: column;
+}

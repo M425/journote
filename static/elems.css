@@ -1,13 +1,17 @@
 :root {
   --c-standard: #f3f1f5;
+  --c-standard-l: #f3f1f5;
   --c-primary: #1976d2;
-  --c-secondary: #2fdbd8;
+  --c-primary-l: #eaf4ff;
+  --c-secondary: #31a7ae;
+  --c-secondary-l: #e1f2f4;
   --c-warning: #ebe046;
+  --c-warning-l: #f6f4d6;
   --c-error: #d34e4e;
+  --c-error-l: #ffe6e6;
 }
 
 button           {
-  padding: 3px;
   border: 1px solid #aaaaaa;
   border-radius: 3px;
   padding: 3px 7px;
@@ -16,20 +20,29 @@ button           {
 
 button:hover     { filter: brightness(105%) }
 
-button.btn           { background: var(--c-standard) }
-button.btn.primary   { background: var(--c-primary) }
-button.btn.secondary { background: var(--c-secondary) }
-button.btn.warning   { background: var(--c-warning) }
-button.btn.error     { background: var(--c-error) }
+button.btn           { background: var(--c-standard-l); color: #888888 }
+button.btn.primary   { background: var(--c-primary-l); color: var(--c-primary) }
+button.btn.secondary { background: var(--c-secondary-l); color: var(--c-secondary) }
+button.btn.warning   { background: var(--c-warning-l); color: var(--c-warning) }
+button.btn.error     { background: var(--c-error-l); color: var(--c-error) }
 
-button.btnp.primary   { background: var(--c-standard) }
-button.btnp.secondary { background: var(--c-standard) }
-button.btnp.warning   { background: var(--c-standard) }
-button.btnp.error     { background: var(--c-standard) }
+button.btnp.primary   { background: var(--c-standard); color: var(--c-primary) }
+button.btnp.secondary { background: var(--c-standard); color: var(--c-secondary) }
+button.btnp.warning   { background: var(--c-standard); color: var(--c-warning) }
+button.btnp.error     { background: var(--c-standard); color: var(--c-error) }
 
 button.btnp.primary.active   { background: var(--c-primary); color: white; }
 button.btnp.secondary.active { background: var(--c-secondary); color: white;  }
 button.btnp.warning.active   { background: var(--c-warning); color: white;  }
 button.btnp.error.active     { background: var(--c-error); color: white;  }
+
+button.btn.small { padding: 1px 2px; border: none}
+button.btn.transparent { background: #ffffff00}
+
+button.btn.transparent:hover           { background: var(--c-standard-l); filter: none}
+button.btn.transparent.primary:hover   { background: var(--c-primary-l); filter: none}
+button.btn.transparent.secondary:hover { background: var(--c-secondary-l); filter: none}
+button.btn.transparent.warning:hover   { background: var(--c-warning-l); filter: none}
+button.btn.transparent.error:hover     { background: var(--c-error-l); filter: none}
 
 
