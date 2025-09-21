@@ -348,7 +348,7 @@ def api_delete_note(note_id):
     note = STORE_NOTES.delete(note_id)
     removed_tags = []
     for tag in note['tags']:
-        if STORE_NOTES.find_in_list('tags', tag) is None:
+        if STORE_NOTES.find_in_list('tags', tag) is None and STORE_TAGS.find_by_id(tag)['content'] == '':
             removed_tags.append(tag)
     return jsonify({"status": "deleted", "removed_tags": removed_tags})
 
@@ -380,7 +380,7 @@ def api_patch_note(note_id):
             any_new_tag.append(STORE_TAGS.add({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None}))
     any_removed_tag = []
     for tag in removed_tags:
-        if len(STORE_NOTES.find_in_list('tags', tag)) == 0:
+        if len(STORE_NOTES.find_in_list('tags', tag)) == 0 and STORE_TAGS.find_by_id(tag)['content'] == '':
             any_removed_tag.append(STORE_TAGS.delete(tag))
     return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
 
@@ -398,15 +398,18 @@ def api_get_tasks():
     logger.info(f"api_get_tasks: Filtering notes for tasks, found {len(filtered_notes)} notes")
     return jsonify(filtered_notes)
 
-@app.route("/api/tags/<category>/<anonTag>/tree", methods=["PATCH"])
+@app.route("/api/tags/<category>/<anonTag>", methods=["PATCH"])
 @auth_required
 def api_patch_tag_tree(category, anonTag):
     logger.debug(f"api_patch_tag_tree: Patching tag {anonTag}")
     tag = CATEGORIES[category] + anonTag
     data = request.get_json()
-    if not data or "treed" not in data or 'parent' not in data:
-        return jsonify({"error": "Missing 'treed' field"}), 400
-    ret = STORE_TAGS.patch(tag, {'treed': bool(data["treed"]), 'parent': data['parent']} )
+    if not data:
+        return jsonify({"error": "Missing body"}), 400
+    for required in ["treed", 'parent', 'content']:
+        if required not in data:
+            return jsonify({"error": "Missing '" + required + "' field"}), 400
+    ret = STORE_TAGS.patch(tag, {'treed': bool(data["treed"]), 'parent': data['parent'], 'content': data['content'], } )
     return jsonify(ret)
 
 @app.post("/api/auth/signin")

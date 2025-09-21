@@ -183,6 +183,11 @@ body {
 .columnHeader {
   padding: 10px; font-weight:500; font-size: 1.2em;
 }
+.columnSubHeader {
+    padding: 10px;
+    background: #f4f4f4;
+    border-bottom: 1px solid #eeeeee
+}
 .noteItem {
   padding:2px 5px;
   display: flex;
@@ -428,9 +433,9 @@ code {
   padding: 1px 0px;
 }
 /* Add to styles.css */
-.task-high { background: #ffeaea; border: 1px solid  #f1d1d1; }
-.task-mid  { background: #fff3d6; border: 1px solid  #e2d2ae; }
-.task-low  { background: #fffdef; border: 1px solid  #e9e6cc; }
+.task-high { background: #ff947e; border: 1px solid  #ff947e; }
+.task-mid  { background: #ffc12c; border: 1px solid  #ffc12c; }
+.task-low  { background: #fff292; border: 1px solid  #fff292; }
 /* Add to your CSS file */
 .column.maximized {
     position: fixed !important;
@@ -520,6 +525,7 @@ code {
   margin-left: 10px;
 }
 #LoginMain {
+  background: #eeeeee;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -529,6 +535,7 @@ code {
   gap: 3em;
 }
 #LoginWrap {
+  background: #ffffff;
   max-height: 600px;
   min-height: 300px;
   height: 50vh;
@@ -579,6 +586,12 @@ code {
 /* Nascondi i figli per default */
 .tagList-tree ul {
   display: none;
+}
+.tagList-tree li {
+  margin-bottom: 4px;
+  margin-top: 4px;
+  padding: 2px 4px;
+  border-radius: 5px;
 }
 
 /* Mostra i figli quando il genitore è espanso */

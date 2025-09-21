@@ -113,7 +113,7 @@ const model = {
     return this[el]._v;
   },
 
-  tags: { _v: null, subs: [], async reload() {this._v = await api.api("/api/tags")} },
+  tags: { _v: null, subs: ['TagsBoxList'], async reload() {this._v = await api.api("/api/tags")} },
   // added 'Calendar' as subscriber so calendar view refreshes when tasks reload
   tasks: { _v: null, subs: ['TagsBoxList','Calendar'], async reload() {
     this._v = await api.api("/api/tasks");
@@ -475,6 +475,7 @@ const view = {
     },
     addTab(tag, notes) {
       // Column
+      tagObj = model.get('tags').find(t => t.name === tag);
       const elColumn = this.el_cw.appendChild(document.createElement('div'));
       elColumn.className = 'column';
       elColumn.dataset.key = tag;
@@ -507,17 +508,36 @@ const view = {
       header.className = 'columnHeader';
       header.textContent = tag;
 
+      const subheader = elColCont.appendChild(document.createElement('div'));
+      subheader.className = 'columnSubHeader';
+      subheader.textContent = tagObj.content;
+      subheader.style.display = 'none';
+
       // Buttons
-      const btnWrap = header.appendChild(document.createElement('span'));
+      const btnWrap = header.appendChild(document.createElement('div'));
       btnWrap.style.float = 'right';
       btnWrap.style.display = 'flex';
       btnWrap.style.gap = '8px';
 
       // Maximize button
+      const contentBtn = btnWrap.appendChild(document.createElement('button'));
+      contentBtn.innerHTML = '<i class="fa fa-eye fa-fw fa-solid fa-xs"> </i>';
+      contentBtn.title = 'Show content';
+      contentBtn.className = 'btnp primary';
+      contentBtn.onclick = (ev) => {
+        ev.stopPropagation();
+          if (subheader.style.display === "none") {
+            subheader.style.display = "block";
+          } else {
+            subheader.style.display = "none";
+          }
+      };
+
+      // Maximize button
       const maxBtn = btnWrap.appendChild(document.createElement('button'));
-      maxBtn.textContent = '⛶';
+      maxBtn.innerHTML = '<i class="fa fa-expand fa-fw fa-solid fa-xs"> </i>';
       maxBtn.title = 'Maximize column';
-      maxBtn.className = 'colMaxBtn';
+      maxBtn.className = 'btnp primary';
       maxBtn.onclick = (ev) => {
         ev.stopPropagation();
         this.maximizeTab(tag);
@@ -525,9 +545,9 @@ const view = {
 
       // Close button
       const closeBtn = btnWrap.appendChild(document.createElement('button'));
-      closeBtn.textContent = '×';
+      closeBtn.innerHTML = '<i class="fa fa-x fa-fw fa-solid fa-xs"> </i>';
       closeBtn.title = 'Close tab';
-      closeBtn.className = 'colCloseBtn';
+      closeBtn.className = 'btnp primary';
       closeBtn.onclick = (ev) => {
         ev.stopPropagation();
         page.home.removeTagview(tag);
@@ -654,7 +674,7 @@ const view = {
         if (ok && ok.status === 'deleted') {
           console.log('Note deleted');
           elNoteItem.remove();
-          await loadAndRenderTags();
+          await model.tags.reload();
         }
       };
       elNoteBtnWrap.appendChild(elNoteDelBtn);
@@ -790,7 +810,7 @@ const view = {
     }
   },
   TagsBoxSubHeader: {
-    render () {
+    render() {
       console.log('[fn] TagsBoxSubHeader.render()');
       this.el = document.getElementById('TagsBoxSubHeader');
       this.el.innerHTML = '';
@@ -878,15 +898,6 @@ const view = {
       const header = document.createElement('div');
       header.style.display = 'flex';
       header.style.alignItems = 'center';
-      // Toggle button per espandere/contrarre
-      const toggleBtn = document.createElement('i');
-      toggleBtn.className = {
-        'high': 'fa-fw fa-solid fa-exclamation-circle color-grey-3',
-        'mid': 'fa-fw fa-solid fa-exclamation-triangle color-grey-3',
-        'low': 'fa-fw fa-solid fa-exclamation color-grey-3'
-      }[task.task];
-      toggleBtn.style.marginRight = '5px';
-      header.appendChild(toggleBtn);
 
       // Nome del tag e funzionalità di click
       const span = document.createElement('span');
@@ -960,11 +971,12 @@ const view = {
       eyeBtn.style.cursor = 'pointer';
       eyeBtn.onclick = async (ev) => {
         ev.stopPropagation();
-        const updated = await api.api(`/api/tags/${tag.category}/${tag.name.substring(1)}/tree`, {
+        const updated = await api.api(`/api/tags/${tag.category}/${tag.name.substring(1)}`, {
           method: "PATCH",
           body: {
             treed: !tag.treed,
-            parent: tag.parent || ''
+            parent: tag.parent || '',
+            content: tag.content || ''
           }
         });
         model.set('tags', (tags) => { 
@@ -1007,8 +1019,8 @@ const view = {
       this.el.innerHTML = '';
       
       /* Date variables */
-      let calendarYear = new Date().getFullYear();
-      let calendarMonth = new Date().getMonth(); // 0-indexed
+      this.calendarYear = this.calendarYear || new Date().getFullYear();
+      this.calendarMonth = (this.calendarMonth !== undefined) ? this.calendarMonth : new Date().getMonth();
 
       // Header with month navigation
       const elJournalHeader = document.createElement('div');
@@ -1018,29 +1030,29 @@ const view = {
       elJournalPrevBtn.className = 'calendar-nav-btn';
       elJournalPrevBtn.textContent = '‹';
       elJournalPrevBtn.onclick = () => {
-        calendarMonth--;
-        if (calendarMonth < 0) {
-          calendarMonth = 11;
-          calendarYear--;
+        this.calendarMonth--;
+        if (this.calendarMonth < 0) {
+          this.calendarMonth = 11;
+          this.calendarYear--;
         }
-        renderJournalBox();
+        this.render();
       };
 
       const elJournalNextBtn = document.createElement('button');
       elJournalNextBtn.className = 'calendar-nav-btn';
       elJournalNextBtn.textContent = '›';
       elJournalNextBtn.onclick = () => {
-        calendarMonth++;
-        if (calendarMonth > 11) {
-          calendarMonth = 0;
-          calendarYear++;
+        this.calendarMonth++;
+        if (this.calendarMonth > 11) {
+          this.calendarMonth = 0;
+          this.calendarYear++;
         }
-        renderJournalBox();
+        this.render();
       };
 
       const elJournalMonthLabel = document.createElement('span');
       elJournalMonthLabel.className = 'calendar-month-label';
-      elJournalMonthLabel.textContent = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}`;
+      elJournalMonthLabel.textContent = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}`;
 
       elJournalHeader.appendChild(elJournalPrevBtn);
       elJournalHeader.appendChild(elJournalMonthLabel);
@@ -1064,9 +1076,9 @@ const view = {
       elJournalTable.appendChild(elJournalThead);
 
       // Days
-      let firstDay = new Date(calendarYear, calendarMonth, 1).getDay();
+      let firstDay = new Date(this.calendarYear, this.calendarMonth, 1).getDay();
       firstDay = (firstDay === 0) ? 6 : firstDay - 1;
-      const daysInMonth = new Date(calendarYear, calendarMonth + 1, 0).getDate();
+      const daysInMonth = new Date(this.calendarYear, this.calendarMonth + 1, 0).getDate();
       const elJournalTbody = document.createElement('tbody');
       let elJournalTrBody = document.createElement('tr');
       let dayCount = 0;
@@ -1098,15 +1110,15 @@ const view = {
         // Highlight today
         const today = new Date();
         const isToday =
-          calendarYear === today.getFullYear() &&
-          calendarMonth === today.getMonth() &&
+          this.calendarYear === today.getFullYear() &&
+          this.calendarMonth === today.getMonth() &&
           d === today.getDate();
         if (isToday) {
           elJournalTdBody.classList.add('calendar-today');
         }
 
         elJournalTdBody.onclick = () => {
-          const dateStr = `${calendarYear}-${String(calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+          const dateStr = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
           page.home.addTagview(dateStr);
         };
         elJournalTrBody.appendChild(elJournalTdBody);
@@ -1184,7 +1196,6 @@ const view = {
         const dt = new Date(parts[0], parts[1] - 1, parts[2]);
         if (dt < monthStart) aboveTasks.push(t);
         else if (dt > monthEnd) belowTasks.push(t);
-        // else: in-month -> left for grid rendering
       });
 
       // helper to build list block (used for above and below)
@@ -1338,7 +1349,7 @@ const modal = {
           return;
         }
         editCallback?.(updated.note);
-        await loadAndRenderTags();
+        await model.tags.reload();
         this.el.remove();
         this.el = null;
       }
@@ -1356,24 +1367,28 @@ const modal = {
       this.el.className = 'modal';
       this.el.innerHTML = `
         <div class="modal-content">
-          <h3>Edit Tag Tree</h3>
-          <form class="myform" style="flex: 1">
+          <h3>Edit Tag</h3>
+          <form id="EditTagForm" class="myform" style="flex: 1">
             <label>
-              <input type="radio" name="treedVisible" value="true" ${tagObj.treed ? 'checked' : ''}>
+              <input type="radio" id="editform-treed" name="treed" value="true" ${tagObj.treed ? 'checked' : ''}>
               Visible
             </label>
             <label>
-              <input type="radio" name="treedVisible" value="false" ${!tagObj.treed ? 'checked' : ''}>
+              <input type="radio" id="editform-treed" name="treed" value="false" ${!tagObj.treed ? 'checked' : ''}>
               Hidden
             </label>
             <div>
-              <label for="parentTagInput">Parent Tag:</label>
-              <input type="text" id="parentTagInput" class="modal-parent-input" value="${tagObj.parent == null ? '' : tagObj.parent.replace(/"/g, '&quot;') || ''}" placeholder="Enter parent tag">
+              <label for="parent">Parent Tag:</label>
+              <input type="text" id="editform-parent" name="parent" class="modal-parent-input" value="${tagObj.parent == null ? '' : tagObj.parent.replace(/"/g, '&quot;') || ''}" placeholder="Enter parent tag">
             </div>
-            <div style="flex: 1"></div>
+            <div style="flex: 1; display: flex; flex-direction: column">
+              <label for="content">Content:</label>
+              <textarea style="flex:1" id="editform-content" name="content" class="modal-textarea">${tagObj.content.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+            </div>
+            <div ></div>
             <div class="modal-actions">
-              <button class="btn standard" id="edit-tree-modal-cancel">Cancel</button>
-              <button class="btn primary" id="edit-tree-modal-save">Save</button>
+              <button type="submit" value="cancel" class="btn standard" id="edit-tree-modal-cancel">Cancel</button>
+              <button type="submit" value="save" class="btn primary" id="edit-tree-modal-save">Save</button>
             </div>
           </div>
         </form>
@@ -1381,27 +1396,38 @@ const modal = {
       document.body.appendChild(this.el);
       
       // Cancel button
+      /*
       this.el.querySelector('#edit-tree-modal-cancel').onclick = () => {
         this.el.remove();
         this.el = null;
       };
+      */
       // Save button
-      this.el.querySelector('#edit-tree-modal-save').onclick = async () => {
-        const updated = await api.api(`/api/tags/${tagObj.category}/${tag.substring(1)}/tree`, {
-          method: "PATCH",
-          body: {
-            "treed": this.el.querySelector('input[name="treedVisible"]:checked').value === 'true',
-            "parent": this.el.querySelector('#parentTagInput').value.trim() || null
-          }
-        });
-        
-        // Update local tag
-        tags[tag] = updated;
-        renderTagsBox();
-        
-        this.el.remove();
-        this.el = null;
-      };
+
+      EditTagForm = document.getElementById('EditTagForm');
+      EditTagForm.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const btn = ev.submitter; // the button element
+        if (btn.value == "cancel") {
+          this.el.remove();
+          this.el = null;
+        } else {
+          const updated = await api.api(`/api/tags/${tagObj.category}/${tag.substring(1)}`, {
+            method: "PATCH",
+            body: Object.fromEntries(new FormData(ev.target).entries())
+          });
+          // Update local tag
+          tags[tag] = updated;
+          model.set('tags', (tags) => {
+            const index = tags.findIndex(item => item['name'] === updated['name']);
+            if (index !== -1) tags[index] = updated;
+            return tags;
+          })
+
+          this.el.remove();
+          this.el = null;
+        }
+      }
     }
   }
 }
