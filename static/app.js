@@ -956,7 +956,9 @@ const view = {
       header.style.alignItems = 'center';
       header.style.padding = "2px 4px";
       header.style.background = "#fff";
-      header.style.border = "1px solid #aaaaaa";
+      header.style.borderWidth = "2px";
+      header.style.borderStyle = "solid";
+      header.className = {'Projects': 'color-border-green-5', 'Events': 'color-border-blue-5', 'Generic': 'color-border-purple-5', 'Persons': 'color-border-orange-5'}[tag.category];
       header.style.borderRadius = "2px";
       const hasChildren = tag.children && tag.children.length > 0;
       // Toggle button per espandere/contrarre
@@ -984,6 +986,8 @@ const view = {
       span.textContent = tag.name;
       span.style.flex = '1';
       span.style.cursor = 'pointer';
+      span.style.fontWeight = '600';
+      span.className = {'Projects': 'color-green-5', 'Events': 'color-blue-5', 'Generic': 'color-purple-5', 'Persons': 'color-orange-5'}[tag.category];
       span.onclick = async () => await page.home.addTagview(tag.name);
       header.appendChild(span);
 

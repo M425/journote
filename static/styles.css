@@ -428,9 +428,9 @@ code {
   padding: 1px 0px;
 }
 /* Add to styles.css */
-.task-high { background: #ff947e; border: 1px solid  #ff947e; }
-.task-mid  { background: #ffc12c; border: 1px solid  #ffc12c; }
-.task-low  { background: #fff292; border: 1px solid  #fff292; }
+.task-high { background: #ffb0a0; border: 1px solid  #ffb0a0; }
+.task-mid  { background: #fff1ad; border: 1px solid  #fff1ad; }
+.task-low  { background: #e0fbff; border: 1px solid  #e0fbff; }
 /* Add to your CSS file */
 .column.maximized {
     position: fixed !important;
@@ -592,9 +592,10 @@ code {
   display: block;
 }
 #TagsBox .tagList-task {
-  margin-left:1em;
-  padding:1px 4px;
-  border-radius:4px;
+    margin-left: 1em;
+    padding: 2px 4px;
+    border: 1px solid rgb(170, 170, 170);
+    border-radius: 2px;
 }
 
 /* Stile per i toggle button */
@@ -603,16 +604,59 @@ code {
   font-weight: bold;
 }
 .color-grey-5 {color: #000000;}
+.color-border-grey-5 {border-color: #000000;}
 .color-grey-4 {color: #626262;}
+.color-border-grey-4 {border-color: #626262;}
 .color-grey-3 {color: #a1a1a1;}
+.color-border-grey-3 {border-color: #a1a1a1;}
 .color-grey-2 {color: #c4c4c4;}
+.color-border-grey-2 {border-color: #c4c4c4;}
 .color-grey-1 {color: #ededed;}
+.color-border-grey-1 {border-color: #ededed;}
 
 .color-blue-5 {color: #002fff;}
+.color-border-blue-5 {border-color: #002fff;}
 .color-blue-4 {color: #4d6eff;}
+.color-border-blue-4 {border-color: #4d6eff;}
 .color-blue-3 {color: #a9b9ff;}
+.color-border-blue-3 {border-color: #a9b9ff;}
 .color-blue-2 {color: #c3ceff;}
+.color-border-blue-2 {border-color: #c3ceff;}
 .color-blue-1 {color: #edf0ff;}
+.color-border-blue-1 {border-color: #edf0ff;}
+
+.color-green-5 {color: #048702;}
+.color-border-green-5 {border-color: #048702;}
+.color-green-4 {color: #2bd028;}
+.color-border-green-4 {border-color: #2bd028;}
+.color-green-3 {color: #5eea5c;}
+.color-border-green-3 {border-color: #5eea5c;}
+.color-green-2 {color: #b5ffb4;}
+.color-border-green-2 {border-color: #b5ffb4;}
+.color-green-1 {color: #deffdd;}
+.color-border-green-1 {border-color: #deffdd;}
+
+.color-purple-5 {color: #9100ae;}
+.color-border-purple-5 {border-color: #9100ae;}
+.color-purple-4 {color: #c941e4;}
+.color-border-purple-4 {border-color: #c941e4;}
+.color-purple-3 {color: #de8bef;}
+.color-border-purple-3 {border-color: #de8bef;}
+.color-purple-2 {color: #ddace6;}
+.color-border-purple-2 {border-color: #ddace6;}
+.color-purple-1 {color: #fbe7ff;}
+.color-border-purple-1 {border-color: #fbe7ff;}
+
+.color-orange-5 {color: #d38900;}
+.color-border-orange-5 {border-color: #d38900;}
+.color-orange-4 {color: #f2ac2a;}
+.color-border-orange-4 {border-color: #f2ac2a;}
+.color-orange-3 {color: #ebbb62;}
+.color-border-orange-3 {border-color: #ebbb62;}
+.color-orange-2 {color: #ffe2ac;}
+.color-border-orange-2 {border-color: #ffe2ac;}
+.color-orange-1 {color: #ffefd3;}
+.color-border-orange-1 {border-color: #ffefd3;}
 
 #TagsBoxSubHeader {
   margin: 10px 0px;
