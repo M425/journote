@@ -172,7 +172,11 @@ const page = {
 
       const tagsVisible = model.get('tagsVisible');
       model.set('tagsVisible', []);
-      tagsVisible.forEach(x => this.addTagview(x))
+      (async () => {
+        await this.addTagview(new Date().toISOString().slice(0, 10)); 
+        for (const x of tagsVisible) { await this.addTagview(x) }
+      })();
+      tagsVisible.forEach(async (x) => await this.addTagview(x));
       document.addEventListener('keydown', (ev) => {
         if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
           /* Alt + n --> focus on editor */
@@ -270,6 +274,10 @@ const page = {
     },
     removeTagview(tag) {
       console.log('[fn] removeTagview', tag);
+      if ((new Date().toISOString().slice(0, 10)) == tag) {
+        console.log('[fn] removeTagview - dont remove today', tag);
+        return;
+      }
       tagsVisible = model.set('tagsVisible', (tags) => tags.filter(t => t !== tag) );
       console.log(tagsVisible)
       view.TopBar.removeTab(tag)
@@ -475,12 +483,12 @@ const view = {
     },
     addTab(tag, notes) {
       // Column
-      tagObj = model.get('tags').find(t => t.name === tag);
+      const tagObj = model.get('tags').find(t => t.name === tag);
       const elColumn = this.el_cw.appendChild(document.createElement('div'));
       elColumn.className = 'column';
       elColumn.dataset.key = tag;
       elColumn.style.position = 'relative';   // needed for resizer positioning
-      elColumn.style.flex = '0 0 320px';      // default width
+      elColumn.style.flex = '0 0 500px';      // default width
 
       // Add resize handle
       const resizeHandle = document.createElement('div');
@@ -510,7 +518,19 @@ const view = {
 
       const subheader = elColCont.appendChild(document.createElement('div'));
       subheader.className = 'columnSubHeader';
-      subheader.textContent = tagObj.content;
+
+      if (tagObj == undefined) {
+        const tagType = helper.getClassfromTag(tag);
+        if (tagType == 'Journal') {
+          subheader.textContent = (new Date(tag)).toLocaleDateString('it-IT', { weekday: 'long', year: "numeric", month: "long", day: "numeric" });
+        } else if (tagType == 'FullText') {
+          subheader.textContent = '';
+        } else {
+          console.error('cant find tagType');
+        }
+      } else {
+        subheader.textContent = tagObj.content;
+      }
       subheader.style.display = 'none';
 
       // Buttons
@@ -1117,9 +1137,9 @@ const view = {
           elJournalTdBody.classList.add('calendar-today');
         }
 
-        elJournalTdBody.onclick = () => {
+        elJournalTdBody.onclick = async () => {
           const dateStr = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-          page.home.addTagview(dateStr);
+          await page.home.addTagview(dateStr);
         };
         elJournalTrBody.appendChild(elJournalTdBody);
         dayCount++;
