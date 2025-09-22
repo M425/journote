@@ -950,24 +950,30 @@ const view = {
       if(!tagsEyeActive && !tag.treed && !this.noDiscendentTask(tag)) {
         li.style.display = "none";
       }
+      li.className="expanded";
       const header = document.createElement('div');
       header.style.display = 'flex';
       header.style.alignItems = 'center';
+      header.style.padding = "2px 4px";
+      header.style.background = "#fff";
+      header.style.border = "1px solid #aaaaaa";
+      header.style.borderRadius = "2px";
       const hasChildren = tag.children && tag.children.length > 0;
       // Toggle button per espandere/contrarre
       const toggleBtn = document.createElement('i');
-      toggleBtn.className = hasChildren ? 'fa-fw fa-solid fa-angles-right color-grey-3' : 'fa-fw fa-solid fa-angle-right color-grey-3';
+      toggleBtn.className = hasChildren ? 'fa-fw fa-regular fa-square-caret-down color-blue-5' : 'fa-fw fa-regular fa-square color-blue-5';
       toggleBtn.style.cursor = hasChildren ? 'pointer' : 'default';
       toggleBtn.style.marginRight = '5px';
       toggleBtn.onclick = () => {
         if (hasChildren) {
           li.classList.toggle('expanded');
           if (li.classList.contains('expanded')) {
-            toggleBtn.classList.remove('fa-angles-right');
-            toggleBtn.classList.add('fa-angles-down');
-          } else {
-            toggleBtn.classList.remove('fa-angles-down');
-            toggleBtn.classList.add('fa-angles-right');
+            toggleBtn.classList.remove('fa-square-caret-right');
+            toggleBtn.classList.add('fa-square-caret-down');
+          }
+          else {
+            toggleBtn.classList.remove('fa-square-caret-down');
+            toggleBtn.classList.add('fa-square-caret-right');
           }
         }
       };

@@ -55,11 +55,6 @@ body {
 }
 .tagList li {
   cursor:pointer;
-  padding:1px 4px;
-  border-radius:4px;
-}
-.tagList li:hover {
-  background:#eef6ff;
 }
 
 /* Tags list */
@@ -590,8 +585,6 @@ code {
 .tagList-tree li {
   margin-bottom: 4px;
   margin-top: 4px;
-  padding: 2px 4px;
-  border-radius: 5px;
 }
 
 /* Mostra i figli quando il genitore è espanso */
@@ -600,6 +593,8 @@ code {
 }
 #TagsBox .tagList-task {
   margin-left:1em;
+  padding:1px 4px;
+  border-radius:4px;
 }
 
 /* Stile per i toggle button */
@@ -612,6 +607,12 @@ code {
 .color-grey-3 {color: #a1a1a1;}
 .color-grey-2 {color: #c4c4c4;}
 .color-grey-1 {color: #ededed;}
+
+.color-blue-5 {color: #002fff;}
+.color-blue-4 {color: #4d6eff;}
+.color-blue-3 {color: #a9b9ff;}
+.color-blue-2 {color: #c3ceff;}
+.color-blue-1 {color: #edf0ff;}
 
 #TagsBoxSubHeader {
   margin: 10px 0px;
