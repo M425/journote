@@ -239,16 +239,16 @@ const page = {
           /* Alt + Arrow up/down --> maximize/restore current tab */
           if(ev.key == 'ArrowUp') {
             ev.preventDefault();
+            const activeTab = model.get('tagsActive');
             // Maximize active tab
-            const activeTab = document.querySelector('.tabPill.active')?.dataset.key;
-            if (activeTab) document.querySelector(`.column[data-key="${activeTab}"] .colMaxBtn`).click()
+            if (activeTab) view.Main.maximizeTab(activeTab);
           }
           /* Alt + Arrow up/down --> maximize/restore current tab */
           if(ev.key == 'ArrowDown') {
             ev.preventDefault();
+            const activeTab = model.get('tagsActive');
             // Restore active tab
-            const activeTab = document.querySelector('.tabPill.active')?.dataset.key;
-            if (activeTab) document.querySelector(`.column[data-key="${activeTab}"] .colMaxBtn`).click()
+            if (activeTab) view.Main.maximizeTab(activeTab);
           }
         }
       });
@@ -890,7 +890,7 @@ const view = {
         title.textContent = secName + ': ';
         el.appendChild(title);
         let tagTree = this.buildTagTree(tags.filter( tag => filter.includes(tag.category)), tasks);
-        el.appendChild(this.createTreeWrap(tagTree, modelTagsBoxEye, modelTagsBoxTask));
+        el.appendChild(this.createTreeWrap(tagTree, modelTagsBoxEye, modelTagsBoxTask, 1));
         this.el.appendChild(el);
       });
       return this.el;
@@ -936,11 +936,11 @@ const view = {
       li.appendChild(header);
       return li;
     },
-    createTreeWrap(tagTree) {
+    createTreeWrap(tagTree, tagsEyeActive, tagsTaskActive, depth) {
       let ul = document.createElement('ul');
       ul.className = 'tagList-tree';
       tagTree.forEach(tag => {
-        ul.appendChild(this.createTreeElement(tag, modelTagsBoxEye, modelTagsBoxTask));
+        ul.appendChild(this.createTreeElement(tag, tagsEyeActive, tagsTaskActive, depth));
       });
       return ul;
     },
@@ -953,13 +953,13 @@ const view = {
       })
       return anyDiscendentTask;
     },
-    createTreeElement(tag, tagsEyeActive, tagsTaskActive) {
+    createTreeElement(tag, tagsEyeActive, tagsTaskActive, depth) {
       const li = document.createElement('li');
       li.style.listStyle = 'none'; // Rimuove il proiettile dell'elemento di lista
       if(!tagsEyeActive && !tag.treed && !this.noDiscendentTask(tag)) {
         li.style.display = "none";
       }
-      li.className="expanded";
+      li.className=`expanded tree-depth-${depth}`;
       const header = document.createElement('div');
       header.style.display = 'flex';
       header.style.alignItems = 'center';
@@ -1041,11 +1041,11 @@ const view = {
 
       li.appendChild(header);
       tag.tasks.forEach(task => {
-        li.appendChild(this.createTaskElement(task, tagsTaskActive));
+        li.appendChild(this.createTaskElement(task, tagsTaskActive, depth+1));
       })
       // Crea la lista dei figli (se esistono)
       if (hasChildren) {
-        li.appendChild(this.createTreeWrap(tag.children, tagsEyeActive, tagsTaskActive));
+        li.appendChild(this.createTreeWrap(tag.children, tagsEyeActive, tagsTaskActive, depth+1));
       }
       return li;
     }
