@@ -30,6 +30,7 @@ const helper = {
     return Array.from(tagsfound);
   },
 }
+
 // API
 const api = {
   async api(url, opts = {}){
@@ -113,7 +114,16 @@ const model = {
     return this[el]._v;
   },
 
-  tags: { _v: null, subs: ['TagsBoxList'], async reload() {this._v = await api.api("/api/tags")} },
+  tags: { _v: null, subs: ['TagsBoxList'], async reload() {
+    this._v = await api.api("/api/tags");
+    this._v.sort((a, b) => {
+      const nameA = a.name.toUpperCase(); // ignore upper and lowercase
+      const nameB = b.name.toUpperCase(); // ignore upper and lowercase
+      if (nameA < nameB) return -1;
+      if (nameA > nameB) return 1;
+      return 0;
+    });
+  } },
   // added 'Calendar' as subscriber so calendar view refreshes when tasks reload
   tasks: { _v: null, subs: ['TagsBoxList','Calendar'], async reload() {
     this._v = await api.api("/api/tasks");
@@ -488,7 +498,7 @@ const view = {
       elColumn.className = 'column';
       elColumn.dataset.key = tag;
       elColumn.style.position = 'relative';   // needed for resizer positioning
-      elColumn.style.flex = '0 0 500px';      // default width
+      elColumn.style.flex = '0 0 700px';      // default width
 
       // Add resize handle
       const resizeHandle = document.createElement('div');
@@ -576,7 +586,6 @@ const view = {
       // Note list
       const elNoteList = elColCont.appendChild(document.createElement('div'));
       elNoteList.className = 'notesList scrollable';
-      elNoteList.style.color = '#777';
 
       // Load notes for this tag
       if(notes.length === 0) {
@@ -713,7 +722,7 @@ const view = {
           if(foundTag == currentTag) foundTagText = '●'
           let labelHtml = `<span
             class="lbl lbl-${lbl_class}"
-            onclick="await page.home.addTagview('${foundTag}')"
+            onclick="page.home.addTagview('${foundTag}')"
             data-tag="${foundTag}">${foundTagText}</span>`;
           // Replace tag in text with label
           noteText = noteText.replace(new RegExp(foundTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), labelHtml);
@@ -1408,8 +1417,12 @@ const modal = {
               Hidden
             </label>
             <div>
+              <label for="rename">Rename Tag:</label>
+              <input type="text" id="editform-rename" name="rename" value="${tagObj.name}" placeholder="Enter new name">
+            </div>
+            <div>
               <label for="parent">Parent Tag:</label>
-              <input type="text" id="editform-parent" name="parent" class="modal-parent-input" value="${tagObj.parent == null ? '' : tagObj.parent.replace(/"/g, '&quot;') || ''}" placeholder="Enter parent tag">
+              <input type="text" id="editform-parent" name="parent" value="${tagObj.parent == null ? '' : tagObj.parent.replace(/"/g, '&quot;') || ''}" placeholder="Enter parent tag">
             </div>
             <div style="flex: 1; display: flex; flex-direction: column">
               <label for="content">Content:</label>

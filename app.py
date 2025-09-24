@@ -38,7 +38,7 @@ CATEGORIES = {
     "Generic": "+",
     "Journal": ""
 }
-TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "7200"))  # 2 hours
+TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "14400"))  # 4 hours
 
 # ------------------ Data ------------------
 class FileBackedStore:
@@ -138,6 +138,18 @@ class FileBackedStore:
             self._data[idx] = current
             self._save()
             return current
+
+    def re_id(self, old_key, new_key):
+        logger.info(f"FileBackedStore[{self._name}] (re_id) '{old_key}' '{new_key}'")
+        with self._lock:
+            idx = self._find_entity_index(old_key)
+            if idx is None:
+                logger.warning(f"FileBackedStore[{self._name}] (re_id) id='{old_key}' not found for patch")
+                raise KeyError("Object not found.")
+            self._data[idx][self._search_key] = new_key
+            self._save()
+            return self._data[idx]
+            
 
 STORE_USERS = FileBackedStore('users', USER_FILE, 'username')
 STORE_NOTES = FileBackedStore('notes', NOTES_FILE, 'id')
@@ -363,6 +375,10 @@ def api_patch_note(note_id):
         return jsonify({"error": "Not found"}), 404
 
     priority, duedate, cleaned_text = extract_task_priority(data["text"])
+    logger.info('priority')
+    logger.info(priority)
+    logger.info('duedate')
+    logger.info(duedate)
     note["task"] = priority
     note['duedate'] = duedate
 
@@ -409,7 +425,25 @@ def api_patch_tag_tree(category, anonTag):
     for required in ["treed", 'parent', 'content']:
         if required not in data:
             return jsonify({"error": "Missing '" + required + "' field"}), 400
-    ret = STORE_TAGS.patch(tag, {'treed': bool(data["treed"]), 'parent': data['parent'], 'content': data['content'], } )
+    ret = STORE_TAGS.patch(tag, {'treed': bool(data["treed"]), 'parent': data['parent'], 'content': data['content']} )
+    if data['rename'] != tag:
+        logger.info(f'renaming tag {tag} {data['rename']}')
+        STORE_TAGS.re_id(tag, data['rename'])
+        notes = STORE_NOTES.find_in_list('tags', tag)
+        for note in notes:
+            note['text'] = note['text'].replace(tag, data['rename'])
+            newtags = []
+            for item in note['tags']:
+                if item == tag:
+                    newtags.append(data['rename'])
+                else:
+                    newtags.append(item)
+            note['tags'] = newtags
+            STORE_NOTES.patch(note['id'], note)
+        tags = STORE_TAGS.find_eq('parent', tag)
+        for t in tags:
+            STORE_TAGS.patch(t['name'], {'parent': data['rename']})
+        ret['name'] = data['rename']
     return jsonify(ret)
 
 @app.post("/api/auth/signin")

@@ -4,9 +4,9 @@
   --pill-blue: #2f7edb;
   --pill-blue-hover: #2362b2;
   --bg: #fff;
-  --muted: #666;
+  --muted: #434343;
   --border: #ccc;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 * {
@@ -153,7 +153,7 @@ body {
 .column {
   flex: 0 0 320px;         /* fixed width, adjust as you like */
   min-width: 280px;        /* ensure a minimum */
-  max-width: 600px;        /* optional: prevent them from being too wide */
+  max-width: 900px;        /* optional: prevent them from being too wide */
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -184,7 +184,7 @@ body {
     border-bottom: 1px solid #eeeeee
 }
 .noteItem {
-  padding:2px 5px;
+  padding: 0px 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -194,10 +194,11 @@ body {
   background:#f8fbff;
 }
 .noteDate {
-  font-size:8px;
+  font-size:10px;
+  text-align: right;
   color:var(--muted);
   display:block;
-  margin-bottom:4px;
+  margin-bottom:0px;
 }
 .noteText {
   white-space:pre-wrap;
@@ -428,9 +429,9 @@ code {
   padding: 1px 0px;
 }
 /* Add to styles.css */
-.task-high { background: #ffb0a0; border: 1px solid  #ffb0a0; }
-.task-mid  { background: #fff1ad; border: 1px solid  #fff1ad; }
-.task-low  { background: #e0fbff; border: 1px solid  #e0fbff; }
+.task-high { background: #ffcac0; }
+.task-mid  { background: #fff5c5; }
+.task-low  { background: #e0fbff; }
 /* Add to your CSS file */
 .column.maximized {
     position: fixed !important;
@@ -446,7 +447,7 @@ code {
     max-width: unset;
 }
 .column.active .column-content {
-    box-shadow: 0px 2px 4px 1px #398dd4
+    outline: 4px solid #398dd4;
 }
 .calendar-header {
   margin-bottom: 5px;
