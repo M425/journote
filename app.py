@@ -426,7 +426,7 @@ def api_patch_tag_tree(category, anonTag):
         if required not in data:
             return jsonify({"error": "Missing '" + required + "' field"}), 400
     ret = STORE_TAGS.patch(tag, {'treed': bool(data["treed"]), 'parent': data['parent'], 'content': data['content']} )
-    if data['rename'] != tag:
+    if 'rename' in data and data['rename'] != tag:
         logger.info(f'renaming tag {tag} {data['rename']}')
         STORE_TAGS.re_id(tag, data['rename'])
         notes = STORE_NOTES.find_in_list('tags', tag)

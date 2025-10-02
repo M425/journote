@@ -19,7 +19,7 @@ const helper = {
   },
   extractTagsFromText(text, trailing_space=true) {
     const tagsfound = new Set();
-    let tagRx = /([#@>\+])([A-Za-z0-9_\-\.]+)[ ,\.;:]/g;
+    let tagRx = /(?<=^|\s)([#@>\+])([A-Za-z0-9_\-\.]+)[ ,\.;:]/g;
     if (!trailing_space) {
       tagRx = /([#@>\+])([A-Za-z0-9_\-\.]+)/g;
     }
@@ -198,7 +198,8 @@ const page = {
           /* Alt + n --> focus on editor */
           if (ev.key.toLowerCase() === 'n') {
             ev.preventDefault();
-            document.getElementById('Editor').focus();
+            view.EditorWrap.easyMDE.codemirror.doc.cm.focus()
+            view.EditorWrap.easyMDE.codemirror.doc.cm.setCursor(view.EditorWrap.easyMDE.codemirror.doc.cm.lineCount(), 0);
           }
           /* Alt + t --> add today's journal entry */
           if (ev.key.toLowerCase() === 't') {
@@ -318,10 +319,24 @@ const page = {
         return;
       }
       view.Main.pushNote(response.note);
+    },
+    async editNote(note) {
+      const response = await api.api(`/api/notes/${note.id}`, {
+        method: 'PATCH',
+        body: {
+          text: note.text,
+          date: note.date
+        }
+      });
+      if(!response || !response.note.id) {
+        alert('Error saving note');
+        return;
+      }
+      view.Main.editedNote(response.note);
+      view.EditorWrap.clear();
     }
   },
 
-  // New calendar page
   calendar: {
     render() {
       this.el = document.getElementById('app');
@@ -337,7 +352,7 @@ const page = {
     }
   }
 };
-
+let aaa = null;
 // VIEW
 const view = {
   createEl(id, typ, options) {
@@ -358,37 +373,88 @@ const view = {
   },
   EditorWrap: {
     render() {
+      this.currentNote = null;
       this.el = document.getElementById('EditorWrap');
       this.el.innerHTML = '';
-      this.ed = this.el.appendChild(view.createEl('Editor', 'textarea', {placeholder: "new note..."}));
+      this.ed = this.el.appendChild(view.createEl('Editor', 'textarea', {placeholder: "new note...",className: "editor-area"}));
       const EditorCtrl = this.el.appendChild(view.createEl('EditorCtrl', 'div', {}));
       const EditorSaveBtn = EditorCtrl.appendChild(view.createEl('EditorSaveBtn', 'button', {className: 'btn primary', textContent: 'Save'}))
+      const EditorUpdateBtn = EditorCtrl.appendChild(view.createEl('EditorUpdateBtn', 'button', {className: 'btn secondary', textContent: 'Update', style: 'display:none;'}))
+      const EditorClearBtn = EditorCtrl.appendChild(view.createEl('EditorClearBtn', 'button', {className: 'btn info', textContent: 'Clear', style: 'display:none;'}))
+      
+      this.easyMDE = new EasyMDE({
+        element: document.getElementById('Editor'),
+        minHeight: '100px',
+        
+      });
+      aaa = this.easyMDE;
+
       let typingDebounce = null;
-      this.ed.addEventListener('input', ()=>{
+      this.easyMDE.codemirror.on("change", (ev) => {
         clearTimeout(typingDebounce);
-        typingDebounce = setTimeout(()=>{
-          const txt = this.ed.value;
+        typingDebounce = setTimeout(() => {
+          const txt = this.easyMDE.value();
           const foundTags = helper.extractTagsFromText(txt);
           foundTags.forEach(tag => page.home.addTagview(tag));
           const date = this.parseLeadingDate(txt);
-          if(date) addTagview(date);
+          if (date) addTagview(date);
         }, 500);
       });
-      Editor.addEventListener('keydown', async (ev) => {
-        if((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter'){
-          ev.preventDefault();
-          await this.saveNote();
+      
+      this.easyMDE.codemirror.setOption("extraKeys", {
+        ...this.easyMDE.codemirror.options.extraKeys, 
+        ...{ 
+          "Ctrl-Enter": async (cm) => {
+            if (this.currentNote) {
+              await this.editNote();
+            } else {
+              await this.saveNote();
+            }
+          }
         }
       });
+
       EditorSaveBtn.addEventListener('click', async (ev) => {
         await this.saveNote()
       });
+
+      EditorClearBtn.addEventListener('click', (ev) => {
+        this.clear();
+      });
+
+      EditorUpdateBtn.addEventListener('click', async (ev) => {
+        this.editNote();
+      });
+    },
+    clear() {
+      this.easyMDE.value('');
+      this.currentNote = null;
+      const EditorSaveBtn = document.getElementById('EditorSaveBtn');
+      const EditorUpdateBtn = document.getElementById('EditorUpdateBtn');
+      const EditorClearBtn = document.getElementById('EditorClearBtn');
+      EditorSaveBtn.style.display = 'block';
+      EditorUpdateBtn.style.display = 'none';
+      EditorClearBtn.style.display = 'none';
+    },
+    renderEditNote(note) {
+      this.currentNote = note;
+      this.easyMDE.value(note.text);
+      this.ed.focus();
+      const EditorSaveBtn = document.getElementById('EditorSaveBtn');
+      const EditorUpdateBtn = document.getElementById('EditorUpdateBtn');
+      const EditorClearBtn = document.getElementById('EditorClearBtn');
+      EditorSaveBtn.style.display = 'none';
+      EditorUpdateBtn.style.display = 'block';
+      EditorClearBtn.style.display = 'block';
+      console.log(this.easyMDE.codemirror)
+      this.easyMDE.codemirror.doc.cm.focus()
+      this.easyMDE.codemirror.doc.cm.setCursor(this.easyMDE.codemirror.doc.cm.lineCount(), 0);
     },
     async saveNote() {
-      const raw = this.ed.value;
+      const raw = this.easyMDE.value();
       const date = this.parseLeadingDate(raw);
       await page.home.saveNote(raw, date);
-      this.ed.value = '';
+      this.easyMDE.value('');
       rawWords = raw.split(/\s+/);
       const newRawWords = new Array();
       for (let w of rawWords) {
@@ -400,6 +466,14 @@ const view = {
         this.ed.value += w + ' ';
       }
       this.ed.focus();
+    },
+    async editNote() {
+      const raw = this.easyMDE.value();
+      if(!raw) return;
+      const date = this.parseLeadingDate(raw);
+      this.currentNote.text = raw;
+      this.currentNote.date = date || this.currentNote.date;
+      await page.home.editNote(this.currentNote);
     },
     parseLeadingDate(text) {
       const m = text.trim().match(/^(\d{4}-\d{2}-\d{2})\b/);
@@ -702,7 +776,7 @@ const view = {
         title: 'Edit note',
         onclick: (ev) => {
           ev.stopPropagation();
-          modal.editModal.render(n, (updatedNote) => { elNoteItem.replaceWith(this.genNoteItem(updatedNote, currentTag));});
+          view.EditorWrap.renderEditNote(n);
         }
       }));
       
@@ -746,7 +820,6 @@ const view = {
       var conv = new showdown.Converter({metadata: true});
       noteText = conv.makeHtml(noteText);
       var metadata = conv.getMetadata(); // returns an object with
-      console.log('metadata', metadata)
       elNoteText.innerHTML = noteText;
       return elNoteText
     },
@@ -772,8 +845,33 @@ const view = {
       };
 
       handle.addEventListener('mousedown', onMouseDown);
+    },
+    editedNote(note) {
+      console.log('[fn] editedNote', note);
+      // Update all tagviews containing this note
+      for (let tag of note.tags) {
+        if (model.get('tagsVisible').includes(tag)) {
+          const noteList = document.querySelector(`.column[data-key="${tag}"] .notesList`);
+          if (noteList) {
+            const elNoteItemOld = noteList.querySelector(`.noteItem[data-id="${note.id}"]`);
+            if (elNoteItemOld) {
+              const newElNoteItem = this.genNoteItem(note, tag);
+              elNoteItemOld.replaceWith(newElNoteItem);
+            }
+          }
+        }
+      }
+      if (model.get('tagsVisible').includes(note.date)) {
+        const noteList = document.querySelector(`.column[data-key="${note.date}"] .notesList`);
+        if (noteList) {
+          const elNoteItemOld = noteList.querySelector(`.noteItem[data-id="${note.id}"]`);
+          if (elNoteItemOld) {
+            const newElNoteItem = this.genNoteItem(note, note.date);
+            elNoteItemOld.replaceWith(newElNoteItem);
+          }
+        }
+      }
     }
-
   },
   LeftBar: {
     render() {
