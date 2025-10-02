@@ -385,7 +385,7 @@ const view = {
       this.easyMDE = new EasyMDE({
         element: document.getElementById('Editor'),
         minHeight: '100px',
-        
+        spellChecker: false
       });
       aaa = this.easyMDE;
 
