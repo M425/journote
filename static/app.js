@@ -29,6 +29,12 @@ const helper = {
     }
     return Array.from(tagsfound);
   },
+  diffToToday(date1) {
+    const date2 = new Date();
+    const diffTime = Math.abs(date2 - date1);
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)); 
+    return diffDays;
+  }
 }
 
 // API
@@ -149,7 +155,7 @@ const page = {
     render() {
       this.el = document.getElementById('app');
       this.el.innerHTML = '';
-      const LoginMain = this.el.appendChild(view.createChild('LoginMain', 'div', {}));
+      const LoginMain = this.el.appendChild(view.createEl('LoginMain', 'div', {}));
       LoginMain.innerHTML = `
         <div id="LoginWrap">
           <h1>Sign In</h1>
@@ -175,8 +181,8 @@ const page = {
     render() {
       this.el = document.getElementById('app');
       this.el.innerHTML = '';
-      this.el.appendChild(view.createChild('LeftBar', 'aside', {}));
-      this.el.appendChild(view.createChild('Main', 'div', {}));
+      this.el.appendChild(view.createEl('LeftBar', 'aside', {}));
+      this.el.appendChild(view.createEl('Main', 'div', {}));
       view.LeftBar.render();
       view.Main.render();
 
@@ -320,8 +326,8 @@ const page = {
     render() {
       this.el = document.getElementById('app');
       this.el.innerHTML = '';
-      this.el.appendChild(view.createChild('LeftBar', 'aside', {}));
-      this.el.appendChild(view.createChild('CalendarMain', 'div', {}));
+      this.el.appendChild(view.createEl('LeftBar', 'aside', {}));
+      this.el.appendChild(view.createEl('CalendarMain', 'div', {}));
       view.LeftBar.render();
       view.Calendar.render();
     },
@@ -334,11 +340,19 @@ const page = {
 
 // VIEW
 const view = {
-  createChild(id, typ, options) {
+  createEl(id, typ, options) {
     const e = document.createElement(typ);
-    e.id = id;
+    if(id != null) {
+      e.id = id;
+    }
     for (o in options) {
-      e[o] = options[o];
+      if (typeof options[o] == 'object') {
+        for (u in options[o]) {
+          e[o][u] = options[o][u]
+        }
+      } else {
+        e[o] = options[o];
+      }
     }
     return e;
   },
@@ -346,9 +360,9 @@ const view = {
     render() {
       this.el = document.getElementById('EditorWrap');
       this.el.innerHTML = '';
-      this.ed = this.el.appendChild(view.createChild('Editor', 'textarea', {placeholder: "new note..."}));
-      const EditorCtrl = this.el.appendChild(view.createChild('EditorCtrl', 'div', {}));
-      const EditorSaveBtn = EditorCtrl.appendChild(view.createChild('EditorSaveBtn', 'button', {className: 'btn primary', textContent: 'Save'}))
+      this.ed = this.el.appendChild(view.createEl('Editor', 'textarea', {placeholder: "new note..."}));
+      const EditorCtrl = this.el.appendChild(view.createEl('EditorCtrl', 'div', {}));
+      const EditorSaveBtn = EditorCtrl.appendChild(view.createEl('EditorSaveBtn', 'button', {className: 'btn primary', textContent: 'Save'}))
       let typingDebounce = null;
       this.ed.addEventListener('input', ()=>{
         clearTimeout(typingDebounce);
@@ -439,7 +453,7 @@ const view = {
       };
       navBtnsWrap.appendChild(calendar);
       
-      this.tc = this.el.appendChild(view.createChild('TopBarContainer', 'div', {className: 'scrollable-x'}));
+      this.tc = this.el.appendChild(view.createEl('TopBarContainer', 'div', {className: 'scrollable-x'}));
     },
     addTab(tag, notes) {
       // Pill
@@ -485,9 +499,9 @@ const view = {
     render() {
       this.el = document.getElementById('Main');
       this.el.innerHTML = '';
-      this.el_tb = this.el.appendChild(view.createChild('TopBar', 'div', {}));
-      this.el_cw = this.el.appendChild(view.createChild('ColumnsWrap', 'div', {className: 'columns scrollable-x'}));
-      this.el_ew = this.el.appendChild(view.createChild('EditorWrap', 'div', {}));
+      this.el_tb = this.el.appendChild(view.createEl('TopBar', 'div', {}));
+      this.el_cw = this.el.appendChild(view.createEl('ColumnsWrap', 'div', {className: 'columns scrollable-x'}));
+      this.el_ew = this.el.appendChild(view.createEl('EditorWrap', 'div', {}));
       view.TopBar.render();
       view.EditorWrap.render();
     },
@@ -645,69 +659,70 @@ const view = {
       col.classList.toggle('maximized');
     },
     genNoteItem(n, currentTag) {
-      const elNoteItem = document.createElement('div');
-      elNoteItem.className = 'noteItem';
-      elNoteItem.dataset.id = n.id;
-      if (n.task === 'high') elNoteItem.classList.add('task-high');
-      else if (n.task === 'mid') elNoteItem.classList.add('task-mid');
-      else if (n.task === 'low') elNoteItem.classList.add('task-low');
+      let taskClass = ''
+      if(n.task != null && n.task != '') { taskClass = 'task-'+n.task }
 
-      // Left side (date + text)
-      const elNoteLeft = document.createElement('div');
-      elNoteLeft.style.flex = '1';
-      elNoteLeft.style.display = 'flex';
-      elNoteLeft.style.flexDirection = 'column';
-      elNoteItem.appendChild(elNoteLeft);
+      const elNoteItem = view.createEl(null, 'div', {
+        className: `noteItem ${taskClass}`,
+        dataset: {id: n.id}
+      })
+      
+      const elNoteDate = elNoteItem.appendChild(view.createEl(null, 'div', {
+        className: 'noteDate flex-col',
+        innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '<br>' + n.date.substring(8,10)
+      }));
 
-      // Note date
-      const elNoteDate = document.createElement('div');
-      elNoteDate.className = 'noteDate';
-      elNoteDate.textContent = `${n.date} · ${new Date(n.timestamp).toLocaleTimeString()}`;
+      const elNoteDiff = elNoteItem.appendChild(view.createEl(null, 'div', {
+        textContent: helper.diffToToday(new Date(n.date)),
+        style: "padding-right: 10px; min-width: 25px; text-align: center; padding-right: 5px; padding-left: 5px; border-right: 1px dashed grey;min-width: 40px;"
+      }));
+
       if(n.duedate) {
         const elNoteDuedate = document.createElement('span');
         elNoteDuedate.className = 'duedate'
-        elNoteDuedate.textContent = `${n.duedate}`;
-        elNoteDate.appendChild(elNoteDuedate);
+        const diff = helper.diffToToday(new Date(n.duedate));
+        elNoteDuedate.innerHTML = `${n.duedate}<br>${diff}`;
+        elNoteItem.appendChild(elNoteDuedate);
       }
-      elNoteLeft.appendChild(elNoteDate);
 
-      // Note text
-      const elNoteText = elNoteLeft.appendChild(this.genNoteText(n, currentTag));
+      // Note Text
+      const elNoteText = elNoteItem
+        .appendChild(view.createEl(null, 'div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
+        .appendChild(this.genNoteText(n, currentTag))
+
+      // ButtonWrap
+      const elNoteBtnWrap = elNoteItem.appendChild(view.createEl(null, 'div', {
+        style: "display:flex; flex-direction: column; gap: 2px; flex: 0; padding-left: 5px;"
+      }));
 
       // Edit button
-      const elNoteBtnWrap = document.createElement('div');
-      elNoteBtnWrap.style = "display:flex; flex-direction: column; gap: 2px; flex: 0; padding-left: 5px;"
-
-      const elNoteEditBtn = document.createElement('button');
-      elNoteEditBtn.className = 'btn primary small transparent';
-      elNoteEditBtn.innerHTML = '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>';
-      elNoteEditBtn.title = 'Edit note';
-      elNoteEditBtn.onclick = (ev) => {
-        ev.stopPropagation();
-        modal.editModal.render(n, (updatedNote) => {
-          // Update note item in place
-          elNoteText.replaceWith(this.genNoteText(updatedNote, currentTag));
-        });
-      };
-      elNoteBtnWrap.appendChild(elNoteEditBtn);
-
-      // Delete button
-      const elNoteDelBtn = document.createElement('button');
-      elNoteDelBtn.className = 'btn error small transparent';
-      elNoteDelBtn.innerHTML = '<i class="fa fa-x fa-solid fa-fw fa-2xs"></i>';
-      elNoteDelBtn.title = 'Delete note';
-      elNoteDelBtn.onclick = async (ev) => {
-        ev.stopPropagation();
-        if (!confirm('Delete this note?')) return;
-        const ok = await api.api(`/api/notes/${n.id}`, {method: "DELETE"});
-        if (ok && ok.status === 'deleted') {
-          console.log('Note deleted');
-          elNoteItem.remove();
-          await model.tags.reload();
+      elNoteBtnWrap.appendChild(view.createEl(null, 'button', {
+        className: 'btn primary small transparent',
+        innerHTML: '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
+        title: 'Edit note',
+        onclick: (ev) => {
+          ev.stopPropagation();
+          modal.editModal.render(n, (updatedNote) => { elNoteItem.replaceWith(this.genNoteItem(updatedNote, currentTag));});
         }
-      };
-      elNoteBtnWrap.appendChild(elNoteDelBtn);
-      elNoteItem.appendChild(elNoteBtnWrap);
+      }));
+      
+      // Delete button
+      const elNoteDelBtn = elNoteBtnWrap.appendChild(view.createEl(null, 'button', {
+        className: 'btn error small transparent',
+        innerHTML: '<i class="fa fa-x fa-solid fa-fw fa-2xs"></i>',
+        title: 'Delete note',
+        onclick: async (ev) => {
+          ev.stopPropagation();
+          if (!confirm('Delete this note?')) return;
+          const ok = await api.api(`/api/notes/${n.id}`, {method: "DELETE"});
+          if (ok && ok.status === 'deleted') {
+            console.log('Note deleted');
+            elNoteItem.remove();
+            await model.tags.reload();
+          }
+        }
+      }));
+
       return elNoteItem
     },
     genNoteText(n, currentTag) {
@@ -728,6 +743,10 @@ const view = {
           noteText = noteText.replace(new RegExp(foundTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), labelHtml);
         });
       }
+      var conv = new showdown.Converter({metadata: true});
+      noteText = conv.makeHtml(noteText);
+      var metadata = conv.getMetadata(); // returns an object with
+      console.log('metadata', metadata)
       elNoteText.innerHTML = noteText;
       return elNoteText
     },
@@ -773,8 +792,8 @@ const view = {
         this.el.style.flex = localStorage.getItem('leftBarWidth');
       }
 
-      this.el.appendChild(view.createChild('JournalBox', 'div', {className: "box", style: "flex: 0"}));
-      this.el.appendChild(view.createChild('TagsBox', 'div', {className: "box", style: "flex: 1"}));
+      this.el.appendChild(view.createEl('JournalBox', 'div', {className: "box", style: "flex: 0"}));
+      this.el.appendChild(view.createEl('TagsBox', 'div', {className: "box", style: "flex: 1"}));
 
       // Resizer
       const handle = document.createElement('div');
@@ -825,11 +844,11 @@ const view = {
       this.el = document.getElementById('TagsBox');
       this.el.innerHTML = '';
      
-      this.el.appendChild(view.createChild('TagsBoxSubHeader', 'div', {
+      this.el.appendChild(view.createEl('TagsBoxSubHeader', 'div', {
         style: "margin: 10px 0px;"
       }));
       
-      this.el.appendChild(view.createChild('TagsBoxList', 'div', {
+      this.el.appendChild(view.createEl('TagsBoxList', 'div', {
         style: "display:block; width:100%;background:none;border:none;font-size:1.2em;z-index:2;",
         className: 'scrollable'
       }));
@@ -1184,10 +1203,10 @@ const view = {
       this.el = document.getElementById('CalendarMain');
       this.el.innerHTML = '';
 
-      this.el_tb = this.el.appendChild(view.createChild('TopBar', 'div', {}));
+      this.el_tb = this.el.appendChild(view.createEl('TopBar', 'div', {}));
       view.TopBar.render();
       
-      this.el_cw = this.el.appendChild(view.createChild('CalendarWrap', 'div', {}));
+      this.el_cw = this.el.appendChild(view.createEl('CalendarWrap', 'div', {}));
 
       this.el.style.flex = '1';
 
@@ -1352,45 +1371,41 @@ const modal = {
       this.el.innerHTML = `
         <div class="modal-content">
           <h3>Edit Note</h3>
-          <form class="myform" style="flex: 1">
-            <textarea name="note-text" class="modal-textarea">${note.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+          <form id="editModal" class="myform" style="flex: 1">
+            <textarea name="text" class="modal-textarea">${note.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
             <div>duedate: ${note.duedate} </div>
             <div>task: ${note.task} </div>
             <div class="modal-actions">
-              <button id="modal-cancel" class="btn standard" id="modal-cancel">Cancel</button>
-              <button id="modal-save" class="btn primary" id="modal-save">Save</button>
+              <button type="submit" value="cancel" class="btn standard" id="edit-modal-cancel">Cancel</button>
+              <button type="submit" value="save" class="btn primary" id="edit-modal-save">Save</button>
             </div>
           </form>
         </div>
       `;
       document.body.appendChild(this.el);
 
-      // Cancel button
-      document.getElementById('modal-cancel').onclick = () => {
-        this.el.remove();
-        this.el = null;
-      };
-      // Save button
-      document.getElementById('modal-save').onclick = async () => {
-        const newText = this.el.querySelector('.modal-textarea').value.trim();
-        if (!newText || newText === note.text) {
+      const editModal =document.getElementById('editModal');
+      editModal.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const btn = ev.submitter; // the button element
+        if (btn.value == "cancel") {
           this.el.remove();
           this.el = null;
-          return;
+        } else {
+          // PATCH API
+          const updated = await api.api(`/api/notes/${note.id}`, {
+            method: "PATCH",
+            body: Object.fromEntries(new FormData(ev.target).entries())
+          });
+          if(!updated || !updated.note.id || updated.status != 'patched') {
+            alert('Error saving note');
+            return;
+          }
+          editCallback?.(updated.note);
+          await model.tags.reload();
+          this.el.remove();
+          this.el = null;
         }
-        // PATCH API
-        const updated = await api.api(`/api/notes/${note.id}`, {
-          method: "PATCH",
-          body: { text: newText }
-        });
-        if(!updated || !updated.note.id || updated.status != 'patched') {
-          alert('Error saving note');
-          return;
-        }
-        editCallback?.(updated.note);
-        await model.tags.reload();
-        this.el.remove();
-        this.el = null;
       }
        
     }
