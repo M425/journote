@@ -251,21 +251,22 @@ def extract_task_priority(text):
         match_duedate = match.group(3)
         if match_duedate:
             if match_duedate == "today":
-                duedate = datetime.now().date().isoformat()
+                duedate = datetime.now().date().isoformat()[:10]
             elif match_duedate == "tomorrow":
-                duedate = (datetime.now().date() + timedelta(days=1)).isoformat()
+                duedate = (datetime.now().date() + timedelta(days=1)).isoformat()[:10]
             elif match_duedate == "week":
-                duedate = (datetime.now().date() + timedelta(days=7)).isoformat()
+                duedate = (datetime.now().date() + timedelta(days=7)).isoformat()[:10]
             elif len(match_duedate) == 5:
                 duedate = f'{datetime.now().year}-{match_duedate}'
             elif len(match_duedate) == 8:
-                duedate = datetime.strptime(match_duedate, '%y-%m-%d').isoformat()
+                duedate = datetime.strptime(match_duedate, '%y-%m-%d').isoformat()[:10]
             elif len(match_duedate) == 10:
-                duedate = datetime.strptime(match_duedate, '%Y-%m-%d').isoformat()
+                duedate = datetime.strptime(match_duedate, '%Y-%m-%d').isoformat()[:10]
 
         cleaned = re.sub(r'(^|\s)(!{1,3})(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', lambda m: m.group(1), text, count=1)
         # cleaned += ' ' + match.group(0).strip()
     cleaned = cleaned.strip()
+
     return priority, duedate, cleaned
 
 def compare_tags(tags_before, tags_after):
@@ -399,6 +400,26 @@ def api_patch_note(note_id):
         if len(STORE_NOTES.find_in_list('tags', tag)) == 0 and STORE_TAGS.find_by_id(tag)['content'] == '':
             any_removed_tag.append(STORE_TAGS.delete(tag))
     return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
+
+@app.route("/api/notes/<year>/<month>/count", methods=["GET"])
+@auth_required
+def api_get_note_counts(year, month):
+    try:
+        year = int(year)
+        month = int(month)
+        if month < 1 or month > 12:
+            raise ValueError
+    except ValueError:
+        return jsonify({"error": "Invalid year or month"}), 400
+
+    from calendar import monthrange
+    days_in_month = monthrange(year, month)[1]
+    date_counts = {f"{year}-{month:02d}-{day:02d}": 0 for day in range(1, days_in_month + 1)}
+    notes = STORE_NOTES.find_all()
+    for note in notes:
+        if note['date'] in date_counts:
+            date_counts[note['date']] += 1
+    return jsonify(date_counts)
 
 @app.route("/api/tags", methods=["GET"])
 @auth_required

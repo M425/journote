@@ -113,6 +113,7 @@ body {
   cursor:pointer;
   font-weight:600;
   white-space:nowrap;
+  height: 36px;
 }
 .tabPill.active {
   background:#bedfff;
@@ -200,11 +201,25 @@ body {
   color:var(--muted);
   display:block;
   margin-bottom:0px;
-  min-width: 40px;
+  min-width: 50px;
+  min-height: 25px;
   text-align: center;
   padding-right: 5px;
   padding-left: 5px;
   border-right: 1px dashed grey;
+  justify-content: center;
+}
+.noteDays {
+  color:var(--muted);
+  display:block;
+  margin-bottom:0px;
+  min-width: 30px;
+  min-height: 25px;
+  text-align: center;
+  padding-right: 5px;
+  padding-left: 5px;
+  border-right: 1px dashed grey;
+  justify-content: center;
 }
 
 
@@ -512,7 +527,8 @@ code {
   background: #dcdcdc;
 }
 .calendar-today {
-  background: #e2ffe7 !important;
+  outline: 1px solid #616161;
+  box-shadow: 0px 0px 6px 1px #616161 inset;
 }
 .calendar-weekend {
   background: #e8e8e8;
@@ -521,8 +537,7 @@ code {
   background: #e3f2fd;
 }
 .duedate {
-  color: red;
-  padding-right: 10px;
+  color: rgb(199, 6, 6);
   text-align: center;
 }
 #LoginMain {
@@ -772,3 +787,16 @@ code {
     color: #959694;
     text-align: right;
 }
+.fa-middle {
+  text-align: center;
+  vertical-align: middle;
+}
+.intensity-0 { background: #ffffff; }
+.intensity-1 { background: #eaf3ff; }
+.intensity-2 { background: #d6e7ff; }
+.intensity-3 { background: #bed8ff; }
+.intensity-4 { background: #a7caff; }
+.intensity-5 { background: #8cbaff; }
+.intensity-6 { background: #6ca5f9; }
+.intensity-7 { background: #4c91f9; }
+.intensity-8 { background: #3b85f4; }

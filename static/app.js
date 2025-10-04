@@ -31,7 +31,7 @@ const helper = {
   },
   diffToToday(date1) {
     const date2 = new Date();
-    const diffTime = Math.abs(date2 - date1);
+    const diffTime = date2 - date1;
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)); 
     return diffDays;
   }
@@ -176,7 +176,6 @@ const page = {
       };
     }
   },
-  
   home: {
     render() {
       this.el = document.getElementById('app');
@@ -336,7 +335,6 @@ const page = {
       view.EditorWrap.clear();
     }
   },
-
   calendar: {
     render() {
       this.el = document.getElementById('app');
@@ -352,7 +350,6 @@ const page = {
     }
   }
 };
-let aaa = null;
 // VIEW
 const view = {
   createEl(id, typ, options) {
@@ -387,7 +384,6 @@ const view = {
         minHeight: '100px',
         spellChecker: false
       });
-      aaa = this.easyMDE;
 
       let typingDebounce = null;
       this.easyMDE.codemirror.on("change", (ev) => {
@@ -491,11 +487,12 @@ const view = {
       const hamburger = document.createElement('button');
       hamburger.id = 'HamburgerBtn';
       hamburger.className = 'navBtn btn standard';
-      hamburger.innerHTML = '<i class="fa fa-2xs fa-fw fa-solid fa-bars"></i>';
+      hamburger.innerHTML = '<i class="fa-xs fa-fw fa-solid fa-bars fa-middle"></i>';
       hamburger.style.top = '10px';
       hamburger.style.left = '10px';
       hamburger.style.zIndex = '1000';
       hamburger.style.fontSize = '20px';
+      hamburger.style.height = '36px';
       hamburger.onclick = () => {
         model.set('leftBarVisible', !model.get('leftBarVisible'));
       };
@@ -504,11 +501,12 @@ const view = {
       const home = document.createElement('button');
       home.id = 'HomeBtn';
       home.className = 'navBtn btn secondary';
-      home.innerHTML = '<i class="fa fa-2xs fa-fw fa-solid fa-home"></i>';
+      home.innerHTML = '<i class="fa-xs fa-fw fa-solid fa-home fa-middle"></i>';
       home.style.top = '10px';
       home.style.left = '10px';
       home.style.zIndex = '1000';
       home.style.fontSize = '20px';
+      home.style.height = '36px';
       home.onclick = () => {
         location.hash = '/home'
       };
@@ -517,11 +515,12 @@ const view = {
       const calendar = document.createElement('button');
       calendar.id = 'calendarBtn';
       calendar.className = 'navBtn btn secondary';
-      calendar.innerHTML = '<i class="fa fa-2xs fa-fw fa-regular fa-calendar"></i>';
+      calendar.innerHTML = '<i class="fa-xs fa-fw fa-regular fa-calendar fa-middle"></i>';
       calendar.style.top = '10px';
       calendar.style.left = '10px';
       calendar.style.zIndex = '1000';
       calendar.style.fontSize = '20px';
+      calendar.style.height = '36px';
       calendar.onclick = () => {
         location.hash = '/calendar'
       };
@@ -743,21 +742,14 @@ const view = {
       
       const elNoteDate = elNoteItem.appendChild(view.createEl(null, 'div', {
         className: 'noteDate flex-col',
-        innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '<br>' + n.date.substring(8,10)
+        innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '-' + n.date.substring(8,10) + 
+                (n.duedate ? '<br><span class="color-purple-4">' + new Date(n.duedate).toLocaleString('default', { month: 'short' }) + '-' + n.duedate.substring(8,10) + '</span>' : ''  )
       }));
-
-      const elNoteDiff = elNoteItem.appendChild(view.createEl(null, 'div', {
-        textContent: helper.diffToToday(new Date(n.date)),
-        style: "padding-right: 10px; min-width: 25px; text-align: center; padding-right: 5px; padding-left: 5px; border-right: 1px dashed grey;min-width: 40px;"
+      const elNoteDays = elNoteItem.appendChild(view.createEl(null, 'div', {
+        className: 'noteDays flex-col',
+        innerHTML: helper.diffToToday(new Date(n.date)) + 
+                (n.duedate ? '<br><span class="color-purple-4">' + helper.diffToToday(new Date(n.duedate)) + '</span>': '' )
       }));
-
-      if(n.duedate) {
-        const elNoteDuedate = document.createElement('span');
-        elNoteDuedate.className = 'duedate'
-        const diff = helper.diffToToday(new Date(n.duedate));
-        elNoteDuedate.innerHTML = `${n.duedate}<br>${diff}`;
-        elNoteItem.appendChild(elNoteDuedate);
-      }
 
       // Note Text
       const elNoteText = elNoteItem
@@ -936,7 +928,6 @@ const view = {
       handle.addEventListener('mousedown', onMouseDown);
     }
   },
-
   TagsBox: {
     render() {
       this.el = document.getElementById('TagsBox');
@@ -1169,7 +1160,7 @@ const view = {
 
   },
   JournalBox: {
-    render() {
+    async render() {
       console.log('[fn] JournalBox.render()');
       this.el = document.getElementById('JournalBox');
       this.el.innerHTML = '';
@@ -1193,7 +1184,10 @@ const view = {
         }
         this.render();
       };
-
+      const numNotesOfMonth = await api.api(`/api/notes/${this.calendarYear}/${String(this.calendarMonth + 1).padStart(2, '0')}/count`);
+      console.log('numNotesOfMonth', numNotesOfMonth);
+      const numNotesOfMonthMax = Math.max(...Object.values(numNotesOfMonth));
+      
       const elJournalNextBtn = document.createElement('button');
       elJournalNextBtn.className = 'calendar-nav-btn';
       elJournalNextBtn.textContent = '›';
@@ -1235,6 +1229,10 @@ const view = {
       let firstDay = new Date(this.calendarYear, this.calendarMonth, 1).getDay();
       firstDay = (firstDay === 0) ? 6 : firstDay - 1;
       const daysInMonth = new Date(this.calendarYear, this.calendarMonth + 1, 0).getDate();
+
+      // gather tasks from model (already loaded by page)
+      const tasks = model.get('tasks') || [];
+
       const elJournalTbody = document.createElement('tbody');
       let elJournalTrBody = document.createElement('tr');
       let dayCount = 0;
@@ -1254,8 +1252,19 @@ const view = {
           elJournalTrBody = document.createElement('tr');
         }
         const elJournalTdBody = document.createElement('td');
-        elJournalTdBody.textContent = d;
         elJournalTdBody.className = 'calendar-cell';
+        const dateStr = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const intensity = numNotesOfMonthMax > 0 ? Math.min(8, Math.ceil((numNotesOfMonth[dateStr] || 0) / (numNotesOfMonthMax / 8))) : 0;
+        console.log(`Date ${dateStr} has ${numNotesOfMonth[dateStr] || 0} notes, intensity ${intensity}`);
+        elJournalTdBody.classList.add(`intensity-${intensity}`);
+        elJournalTdBody.style.position = 'relative';
+
+        // Day number element
+        const dayNumEl = document.createElement('div');
+        dayNumEl.style.fontWeight = '600';
+        dayNumEl.style.marginBottom = '6px';
+        dayNumEl.textContent = d;
+        elJournalTdBody.appendChild(dayNumEl);
 
         // Mark weekends (Saturday: 5, Sunday: 6)
         const weekdayIndex = (dayCount % 7);
@@ -1273,8 +1282,24 @@ const view = {
           elJournalTdBody.classList.add('calendar-today');
         }
 
+        // Red dot if there are tasks on that day
+        const tasksForDay = tasks.filter(t => t.duedate === dateStr);
+        if (tasksForDay.length > 0) {
+          const dot = document.createElement('div');
+          dot.className = 'journal-task-dot';
+          dot.title = `${tasksForDay.length} task(s)`;
+          dot.style.position = 'absolute';
+          dot.style.top = '6px';
+          dot.style.right = '6px';
+          dot.style.width = '8px';
+          dot.style.height = '8px';
+          dot.style.borderRadius = '50%';
+          dot.style.background = '#e53935';
+          dot.style.boxShadow = '0 0 0 2px rgba(229,57,53,0.12)';
+          elJournalTdBody.appendChild(dot);
+        }
+
         elJournalTdBody.onclick = async () => {
-          const dateStr = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
           await page.home.addTagview(dateStr);
         };
         elJournalTrBody.appendChild(elJournalTdBody);
@@ -1294,19 +1319,16 @@ const view = {
       this.el.appendChild(elJournalTable);
     }
   },
-
-  // NEW: Calendar view used for the dedicated "calendar" page in the center area.
   Calendar: {
     render() {
       this.el = document.getElementById('CalendarMain');
       this.el.innerHTML = '';
+      this.el.style.flex = '1';
 
       this.el_tb = this.el.appendChild(view.createEl('TopBar', 'div', {}));
       view.TopBar.render();
       
       this.el_cw = this.el.appendChild(view.createEl('CalendarWrap', 'div', {}));
-
-      this.el.style.flex = '1';
 
       // initialize current view month/year if not present
       this.calendarYear = this.calendarYear || new Date().getFullYear();
@@ -1374,15 +1396,35 @@ const view = {
         const listWrap = document.createElement('div');
         listWrap.style.display = 'flex';
         listWrap.style.flexDirection = 'column';
-        listWrap.style.gap = '6px';
-        list.forEach(t => {
-          const tEl = document.createElement('div');
-          tEl.className = `tagList-task task-${t.task || 'low'}`;
-          tEl.style.padding = '6px';
-          tEl.style.borderRadius = '6px';
-          tEl.title = `${t.text}${t.duedate ? ' — ' + t.duedate : ''}`;
-          tEl.textContent = `${t.duedate} - ${(t.text.length > 120) ? t.text.slice(0,120) + '…' : t.text}`;
-          listWrap.appendChild(tEl);
+        list.forEach(n => {
+          let taskClass = ''
+          if(n.task != null && n.task != '') { taskClass = 'task-'+n.task }
+          const elNoteItem = view.createEl(null, 'div', {
+            className: `noteItem ${taskClass}`,
+            dataset: {id: n.id}
+          })
+          const elNoteDate = elNoteItem.appendChild(view.createEl(null, 'div', {
+            className: 'noteDate flex-col',
+            innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '-' + n.date.substring(8,10) + 
+                    (n.duedate ? '<br><span class="color-purple-4">' + new Date(n.duedate).toLocaleString('default', { month: 'short' }) + '-' + n.duedate.substring(8,10) + '</span>' : ''  )
+          }));
+          const elNoteDays = elNoteItem.appendChild(view.createEl(null, 'div', {
+            className: 'noteDays flex-col',
+            innerHTML: helper.diffToToday(new Date(n.date)) + 
+                    (n.duedate ? '<br><span class="color-purple-4">' + helper.diffToToday(new Date(n.duedate)) + '</span>': '' )
+          }));
+          const elNoteText = elNoteItem
+            .appendChild(view.createEl(null, 'div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
+            .appendChild(view.Main.genNoteText(n, ''))
+
+
+          // const tEl = document.createElement('div');
+          // tEl.className = `tagList-task task-${t.task || 'low'}`;
+          // tEl.style.padding = '6px';
+          // tEl.style.borderRadius = '6px';
+          // tEl.title = `${t.text}${t.duedate ? ' — ' + t.duedate : ''}`;
+          // tEl.textContent = `${t.duedate} - ${(t.text.length > 120) ? t.text.slice(0,120) + '…' : t.text}`;
+          listWrap.appendChild(elNoteItem);
         });
         wrap.appendChild(listWrap);
         return wrap;
