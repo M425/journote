@@ -1,7 +1,8 @@
 // main js file (updated: added Calendar page)
+const eid = (el) => document.getElementById(el);
 
+// HELPER
 const helper = {
-  // HELPER
   getClassfromTag(tag) {
     if (tag.startsWith('#')) return 'Projects';
     if (tag.startsWith('@')) return 'Persons';
@@ -142,7 +143,7 @@ const model = {
   leftBarVisible: { _v: true, subs: ['LeftBar'] }
 };
 
-// PAGE
+// PAGES
 const page = {
   login: {
     async load() {
@@ -153,9 +154,9 @@ const page = {
       }
     },
     render() {
-      this.el = document.getElementById('app');
+      this.el = eid('app');
       this.el.innerHTML = '';
-      const LoginMain = this.el.appendChild(view.createEl('LoginMain', 'div', {}));
+      const LoginMain = this.el.appendChild(view.createEl('div', {id: 'LoginMain'}));
       LoginMain.innerHTML = `
         <div id="LoginWrap">
           <h1>Sign In</h1>
@@ -166,8 +167,8 @@ const page = {
             <div class="error" id="loginError"></div>
           </form>
         </div>`;
-      const form = document.getElementById("loginForm");
-      const errBox = document.getElementById("loginError");
+      const form = eid("loginForm");
+      const errBox = eid("loginError");
       form.onsubmit = async (e) => {
         e.preventDefault();
         errBox.textContent = "";
@@ -178,10 +179,10 @@ const page = {
   },
   home: {
     render() {
-      this.el = document.getElementById('app');
+      this.el = eid('app');
       this.el.innerHTML = '';
-      this.el.appendChild(view.createEl('LeftBar', 'aside', {}));
-      this.el.appendChild(view.createEl('Main', 'div', {}));
+      this.el.appendChild(view.createEl('aside', {id: 'LeftBar'}));
+      this.el.appendChild(view.createEl('div', {id: 'Main'}));
       view.LeftBar.render();
       view.Main.render();
 
@@ -337,10 +338,10 @@ const page = {
   },
   calendar: {
     render() {
-      this.el = document.getElementById('app');
+      this.el = eid('app');
       this.el.innerHTML = '';
-      this.el.appendChild(view.createEl('LeftBar', 'aside', {}));
-      this.el.appendChild(view.createEl('CalendarMain', 'div', {}));
+      this.el.appendChild(view.createEl('aside', {id: 'LeftBar'}));
+      this.el.appendChild(view.createEl('div', {id: 'CalendarMain'}));
       view.LeftBar.render();
       view.Calendar.render();
     },
@@ -352,11 +353,8 @@ const page = {
 };
 // VIEW
 const view = {
-  createEl(id, typ, options) {
+  createEl(typ, options) {
     const e = document.createElement(typ);
-    if(id != null) {
-      e.id = id;
-    }
     for (o in options) {
       if (typeof options[o] == 'object') {
         for (u in options[o]) {
@@ -371,32 +369,33 @@ const view = {
   EditorWrap: {
     render() {
       this.currentNote = null;
-      this.el = document.getElementById('EditorWrap');
+      this.el = eid('EditorWrap');
       this.el.innerHTML = '';
-      this.ed = this.el.appendChild(view.createEl('Editor', 'textarea', {placeholder: "new note...",className: "editor-area"}));
-      const EditorCtrl = this.el.appendChild(view.createEl('EditorCtrl', 'div', {}));
-      const EditorSaveBtn = EditorCtrl.appendChild(view.createEl('EditorSaveBtn', 'button', {className: 'btn primary', textContent: 'Save'}))
-      const EditorUpdateBtn = EditorCtrl.appendChild(view.createEl('EditorUpdateBtn', 'button', {className: 'btn secondary', textContent: 'Update', style: 'display:none;'}))
-      const EditorClearBtn = EditorCtrl.appendChild(view.createEl('EditorClearBtn', 'button', {className: 'btn info', textContent: 'Clear', style: 'display:none;'}))
+      this.ed = this.el.appendChild(view.createEl('textarea', {id: 'Editor', placeholder: "new note...",className: "editor-area"}));
+      const EditorCtrl = this.el.appendChild(view.createEl('div', {id: 'EditorCtrl'}));
+      const EditorSaveBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorSaveBtn', className: 'btn primary', textContent: 'Save'}))
+      const EditorUpdateBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorUpdateBtn', className: 'btn secondary', textContent: 'Update', style: 'display:none;'}))
+      const EditorClearBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorClearBtn', className: 'btn info', textContent: 'Clear', style: 'display:none;'}))
       
       this.easyMDE = new EasyMDE({
-        element: document.getElementById('Editor'),
+        element: eid('Editor'),
         minHeight: '100px',
         spellChecker: false
       });
 
-      let typingDebounce = null;
-      this.easyMDE.codemirror.on("change", (ev) => {
-        clearTimeout(typingDebounce);
-        typingDebounce = setTimeout(() => {
-          const txt = this.easyMDE.value();
-          const foundTags = helper.extractTagsFromText(txt);
-          foundTags.forEach(tag => page.home.addTagview(tag));
-          const date = this.parseLeadingDate(txt);
-          if (date) addTagview(date);
-        }, 500);
-      });
+      // let typingDebounce = null;
+      // this.easyMDE.codemirror.on("change", (ev) => {
+      //   clearTimeout(typingDebounce);
+      //   typingDebounce = setTimeout(() => {
+      //     const txt = this.easyMDE.value();
+      //     const foundTags = helper.extractTagsFromText(txt);
+      //     foundTags.forEach(tag => page.home.addTagview(tag));
+      //     const date = this.parseLeadingDate(txt);
+      //     if (date) addTagview(date);
+      //   }, 500);
+      // });
       
+      /* Ctrl+Enter to save note */
       this.easyMDE.codemirror.setOption("extraKeys", {
         ...this.easyMDE.codemirror.options.extraKeys, 
         ...{ 
@@ -410,35 +409,32 @@ const view = {
         }
       });
 
+      /* Button events */
       EditorSaveBtn.addEventListener('click', async (ev) => {
         await this.saveNote()
       });
-
       EditorClearBtn.addEventListener('click', (ev) => {
         this.clear();
       });
-
       EditorUpdateBtn.addEventListener('click', async (ev) => {
         this.editNote();
       });
+
     },
     clear() {
       this.easyMDE.value('');
       this.currentNote = null;
-      const EditorSaveBtn = document.getElementById('EditorSaveBtn');
-      const EditorUpdateBtn = document.getElementById('EditorUpdateBtn');
-      const EditorClearBtn = document.getElementById('EditorClearBtn');
-      EditorSaveBtn.style.display = 'block';
-      EditorUpdateBtn.style.display = 'none';
-      EditorClearBtn.style.display = 'none';
+      eid('EditorSaveBtn').style.display = 'block';
+      eid('EditorUpdateBtn').style.display = 'none';
+      eid('EditorClearBtn').style.display = 'none';
     },
     renderEditNote(note) {
       this.currentNote = note;
       this.easyMDE.value(note.text);
       this.ed.focus();
-      const EditorSaveBtn = document.getElementById('EditorSaveBtn');
-      const EditorUpdateBtn = document.getElementById('EditorUpdateBtn');
-      const EditorClearBtn = document.getElementById('EditorClearBtn');
+      const EditorSaveBtn = eid('EditorSaveBtn');
+      const EditorUpdateBtn = eid('EditorUpdateBtn');
+      const EditorClearBtn = eid('EditorClearBtn');
       EditorSaveBtn.style.display = 'none';
       EditorUpdateBtn.style.display = 'block';
       EditorClearBtn.style.display = 'block';
@@ -459,7 +455,7 @@ const view = {
         } else break;
       }
       for (let w of newRawWords) {
-        this.ed.value += w + ' ';
+        this.easyMDE.value(this.easyMDE.value() + w + ' ');
       }
       this.ed.focus();
     },
@@ -469,6 +465,7 @@ const view = {
       const date = this.parseLeadingDate(raw);
       this.currentNote.text = raw;
       this.currentNote.date = date || this.currentNote.date;
+      console.log('[fn] EditorWrap.editNote', this.currentNote);
       await page.home.editNote(this.currentNote);
     },
     parseLeadingDate(text) {
@@ -478,55 +475,42 @@ const view = {
   },
   TopBar: {
     render() {
-      this.el = document.getElementById('TopBar');
+      this.el = eid('TopBar');
       this.el.innerHTML = '';
-      const navBtnsWrap = document.createElement('div');
-      navBtnsWrap.className = "navBtnsWrap"
-      this.el.appendChild(navBtnsWrap);
-      // Hamburger button
-      const hamburger = document.createElement('button');
-      hamburger.id = 'HamburgerBtn';
-      hamburger.className = 'navBtn btn standard';
-      hamburger.innerHTML = '<i class="fa-xs fa-fw fa-solid fa-bars fa-middle"></i>';
-      hamburger.style.top = '10px';
-      hamburger.style.left = '10px';
-      hamburger.style.zIndex = '1000';
-      hamburger.style.fontSize = '20px';
-      hamburger.style.height = '36px';
-      hamburger.onclick = () => {
-        model.set('leftBarVisible', !model.get('leftBarVisible'));
-      };
-      navBtnsWrap.appendChild(hamburger);
       
-      const home = document.createElement('button');
-      home.id = 'HomeBtn';
-      home.className = 'navBtn btn secondary';
-      home.innerHTML = '<i class="fa-xs fa-fw fa-solid fa-home fa-middle"></i>';
-      home.style.top = '10px';
-      home.style.left = '10px';
-      home.style.zIndex = '1000';
-      home.style.fontSize = '20px';
-      home.style.height = '36px';
-      home.onclick = () => {
-        location.hash = '/home'
-      };
-      navBtnsWrap.appendChild(home);
+      const navBtnsWrap = this.el.appendChild(view.createEl('div', {className: 'navBtnsWrap'}));
+
+      const hamburger = navBtnsWrap.appendChild(view.createEl('button', {
+        id: 'HamburgerBtn',
+        className: 'navBtn btn standard',
+        innerHTML: '<i class="fa-xs fa-fw fa-solid fa-bars fa-middle"></i>',
+        style: { top: '10px',left: '10px',zIndex: '1000',fontSize: '20px',height: '36px'},
+        onclick: () => {
+          model.set('leftBarVisible', !model.get('leftBarVisible'));
+        }
+      }));
+            
+      const home = navBtnsWrap.appendChild(view.createEl('button', {
+        id:'HomeBtn',
+        className:'navBtn btn secondary',
+        innerHTML:'<i class="fa-xs fa-fw fa-solid fa-home fa-middle"></i>',
+        style: {top:'10px', left:'10px', zIndex:'1000', fontSize:'20px', height:'36px'},
+        onclick:() => {
+          location.hash = '/home'
+        }
+      }));
       
-      const calendar = document.createElement('button');
-      calendar.id = 'calendarBtn';
-      calendar.className = 'navBtn btn secondary';
-      calendar.innerHTML = '<i class="fa-xs fa-fw fa-regular fa-calendar fa-middle"></i>';
-      calendar.style.top = '10px';
-      calendar.style.left = '10px';
-      calendar.style.zIndex = '1000';
-      calendar.style.fontSize = '20px';
-      calendar.style.height = '36px';
-      calendar.onclick = () => {
-        location.hash = '/calendar'
-      };
-      navBtnsWrap.appendChild(calendar);
+      const calendar = navBtnsWrap.appendChild(view.createEl('button', {
+        id: 'calendarBtn',
+        className: 'navBtn btn secondary',
+        innerHTML: '<i class="fa-xs fa-fw fa-regular fa-calendar fa-middle"></i>',
+        style: {top: '10px', left: '10px', zIndex: '1000', fontSize: '20px', height: '36px'},
+        onclick: () => {
+          location.hash = '/calendar'
+        }
+      }));
       
-      this.tc = this.el.appendChild(view.createEl('TopBarContainer', 'div', {className: 'scrollable-x'}));
+      this.tc = this.el.appendChild(view.createEl('div', {id: 'TopBarContainer', className: 'scrollable-x'}));
     },
     addTab(tag, notes) {
       // Pill
@@ -570,11 +554,11 @@ const view = {
   },
   Main: {
     render() {
-      this.el = document.getElementById('Main');
+      this.el = eid('Main');
       this.el.innerHTML = '';
-      this.el_tb = this.el.appendChild(view.createEl('TopBar', 'div', {}));
-      this.el_cw = this.el.appendChild(view.createEl('ColumnsWrap', 'div', {className: 'columns scrollable-x'}));
-      this.el_ew = this.el.appendChild(view.createEl('EditorWrap', 'div', {}));
+      this.el_tb = this.el.appendChild(view.createEl('div', {id: 'TopBar'}));
+      this.el_cw = this.el.appendChild(view.createEl('div', {id: 'ColumnsWrap', className: 'columns scrollable-x'}));
+      this.el_ew = this.el.appendChild(view.createEl('div', {id: 'EditorWrap'}));
       view.TopBar.render();
       view.EditorWrap.render();
     },
@@ -619,16 +603,19 @@ const view = {
       if (tagObj == undefined) {
         const tagType = helper.getClassfromTag(tag);
         if (tagType == 'Journal') {
-          subheader.textContent = (new Date(tag)).toLocaleDateString('it-IT', { weekday: 'long', year: "numeric", month: "long", day: "numeric" });
+          subheader.innerHTML = (new Date(tag)).toLocaleDateString('it-IT', { weekday: 'long', year: "numeric", month: "long", day: "numeric" });
         } else if (tagType == 'FullText') {
-          subheader.textContent = '';
+          subheader.innerHTML = '';
         } else {
-          console.error('cant find tagType');
+          console.error('tagObj is undefined');
         }
       } else {
-        subheader.textContent = tagObj.content;
+        var conv = new showdown.Converter({metadata: true});
+        var content = conv.makeHtml(tagObj.content);
+        var metadata = conv.getMetadata(); // returns an object with
+        subheader.innerHTML = content;
       }
-      subheader.style.display = 'none';
+      subheader.style.display = 'block';
 
       // Buttons
       const btnWrap = header.appendChild(document.createElement('div'));
@@ -702,10 +689,10 @@ const view = {
     },
     pushNote(note) {
       console.log('[fn] pushNote', note);
-      // Ensure tagviews exist
+      /* automatically add to all tag views based on note tags */
       for (let tag of note.tags) {
         if (!model.get('tagsVisible').includes(tag)) {
-          page.home.addTagview(tag);
+          // page.home.addTagview(tag);
         } else {
           const noteList = document.querySelector(`.column[data-key="${tag}"] .notesList`);
           if (noteList) {
@@ -714,8 +701,10 @@ const view = {
           }
         }
       }
+
+      /* automatically add date view */
       if (!model.get('tagsVisible').includes(note.date)) {
-        page.home.addTagview(note.date);
+        // page.home.addTagview(note.date);
       } else {
         const noteList = document.querySelector(`.column[data-key="${note.date}"] .notesList`);
         if (noteList) {
@@ -735,17 +724,17 @@ const view = {
       let taskClass = ''
       if(n.task != null && n.task != '') { taskClass = 'task-'+n.task }
 
-      const elNoteItem = view.createEl(null, 'div', {
+      const elNoteItem = view.createEl('div', {
         className: `noteItem ${taskClass}`,
         dataset: {id: n.id}
       })
       
-      const elNoteDate = elNoteItem.appendChild(view.createEl(null, 'div', {
+      const elNoteDate = elNoteItem.appendChild(view.createEl('div', {
         className: 'noteDate flex-col',
         innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '-' + n.date.substring(8,10) + 
                 (n.duedate ? '<br><span class="color-purple-4">' + new Date(n.duedate).toLocaleString('default', { month: 'short' }) + '-' + n.duedate.substring(8,10) + '</span>' : ''  )
       }));
-      const elNoteDays = elNoteItem.appendChild(view.createEl(null, 'div', {
+      const elNoteDays = elNoteItem.appendChild(view.createEl('div', {
         className: 'noteDays flex-col',
         innerHTML: helper.diffToToday(new Date(n.date)) + 
                 (n.duedate ? '<br><span class="color-purple-4">' + helper.diffToToday(new Date(n.duedate)) + '</span>': '' )
@@ -753,16 +742,16 @@ const view = {
 
       // Note Text
       const elNoteText = elNoteItem
-        .appendChild(view.createEl(null, 'div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
+        .appendChild(view.createEl('div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
         .appendChild(this.genNoteText(n, currentTag))
 
       // ButtonWrap
-      const elNoteBtnWrap = elNoteItem.appendChild(view.createEl(null, 'div', {
+      const elNoteBtnWrap = elNoteItem.appendChild(view.createEl('div', {
         style: "display:flex; flex-direction: column; gap: 2px; flex: 0; padding-left: 5px;"
       }));
 
       // Edit button
-      elNoteBtnWrap.appendChild(view.createEl(null, 'button', {
+      elNoteBtnWrap.appendChild(view.createEl('button', {
         className: 'btn primary small transparent',
         innerHTML: '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
         title: 'Edit note',
@@ -773,7 +762,7 @@ const view = {
       }));
       
       // Delete button
-      const elNoteDelBtn = elNoteBtnWrap.appendChild(view.createEl(null, 'button', {
+      const elNoteDelBtn = elNoteBtnWrap.appendChild(view.createEl('button', {
         className: 'btn error small transparent',
         innerHTML: '<i class="fa fa-x fa-solid fa-fw fa-2xs"></i>',
         title: 'Delete note',
@@ -867,7 +856,7 @@ const view = {
   },
   LeftBar: {
     render() {
-      this.el = document.getElementById('LeftBar');
+      this.el = eid('LeftBar');
       this.el.innerHTML = '';
 
       // check visibility
@@ -882,8 +871,8 @@ const view = {
         this.el.style.flex = localStorage.getItem('leftBarWidth');
       }
 
-      this.el.appendChild(view.createEl('JournalBox', 'div', {className: "box", style: "flex: 0"}));
-      this.el.appendChild(view.createEl('TagsBox', 'div', {className: "box", style: "flex: 1"}));
+      this.el.appendChild(view.createEl('div', {id: 'JournalBox', className: "box", style: "flex: 0"}));
+      this.el.appendChild(view.createEl('div', {id: 'TagsBox', className: "box", style: "flex: 1"}));
 
       // Resizer
       const handle = document.createElement('div');
@@ -930,14 +919,14 @@ const view = {
   },
   TagsBox: {
     render() {
-      this.el = document.getElementById('TagsBox');
+      this.el = eid('TagsBox');
       this.el.innerHTML = '';
      
-      this.el.appendChild(view.createEl('TagsBoxSubHeader', 'div', {
+      this.el.appendChild(view.createEl('div', {id: 'TagsBoxSubHeader',
         style: "margin: 10px 0px;"
       }));
       
-      this.el.appendChild(view.createEl('TagsBoxList', 'div', {
+      this.el.appendChild(view.createEl('div', {id: 'TagsBoxList',
         style: "display:block; width:100%;background:none;border:none;font-size:1.2em;z-index:2;",
         className: 'scrollable'
       }));
@@ -949,7 +938,7 @@ const view = {
   TagsBoxSubHeader: {
     render() {
       console.log('[fn] TagsBoxSubHeader.render()');
-      this.el = document.getElementById('TagsBoxSubHeader');
+      this.el = eid('TagsBoxSubHeader');
       this.el.innerHTML = '';
       
       const elTagsEye = document.createElement('button');
@@ -979,7 +968,7 @@ const view = {
   TagsBoxList: {
     render() {
       console.log('[fn] TagsBoxList.render()');
-      this.el = document.getElementById('TagsBoxList');
+      this.el = eid('TagsBoxList');
       this.el.innerHTML = '';
 
       const sectionsDiv = {
@@ -1162,7 +1151,7 @@ const view = {
   JournalBox: {
     async render() {
       console.log('[fn] JournalBox.render()');
-      this.el = document.getElementById('JournalBox');
+      this.el = eid('JournalBox');
       this.el.innerHTML = '';
       
       /* Date variables */
@@ -1185,7 +1174,7 @@ const view = {
         this.render();
       };
       const numNotesOfMonth = await api.api(`/api/notes/${this.calendarYear}/${String(this.calendarMonth + 1).padStart(2, '0')}/count`);
-      console.log('numNotesOfMonth', numNotesOfMonth);
+      console.debug('numNotesOfMonth', numNotesOfMonth);
       const numNotesOfMonthMax = Math.max(...Object.values(numNotesOfMonth));
       
       const elJournalNextBtn = document.createElement('button');
@@ -1255,7 +1244,7 @@ const view = {
         elJournalTdBody.className = 'calendar-cell';
         const dateStr = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         const intensity = numNotesOfMonthMax > 0 ? Math.min(8, Math.ceil((numNotesOfMonth[dateStr] || 0) / (numNotesOfMonthMax / 8))) : 0;
-        console.log(`Date ${dateStr} has ${numNotesOfMonth[dateStr] || 0} notes, intensity ${intensity}`);
+        console.debug(`Date ${dateStr} has ${numNotesOfMonth[dateStr] || 0} notes, intensity ${intensity}`);
         elJournalTdBody.classList.add(`intensity-${intensity}`);
         elJournalTdBody.style.position = 'relative';
 
@@ -1321,14 +1310,14 @@ const view = {
   },
   Calendar: {
     render() {
-      this.el = document.getElementById('CalendarMain');
+      this.el = eid('CalendarMain');
       this.el.innerHTML = '';
       this.el.style.flex = '1';
 
-      this.el_tb = this.el.appendChild(view.createEl('TopBar', 'div', {}));
+      this.el_tb = this.el.appendChild(view.createEl('div', {id: 'TopBar'}));
       view.TopBar.render();
       
-      this.el_cw = this.el.appendChild(view.createEl('CalendarWrap', 'div', {}));
+      this.el_cw = this.el.appendChild(view.createEl('div', {id: 'CalendarWrap'}));
 
       // initialize current view month/year if not present
       this.calendarYear = this.calendarYear || new Date().getFullYear();
@@ -1399,22 +1388,22 @@ const view = {
         list.forEach(n => {
           let taskClass = ''
           if(n.task != null && n.task != '') { taskClass = 'task-'+n.task }
-          const elNoteItem = view.createEl(null, 'div', {
+          const elNoteItem = view.createEl('div', {
             className: `noteItem ${taskClass}`,
             dataset: {id: n.id}
           })
-          const elNoteDate = elNoteItem.appendChild(view.createEl(null, 'div', {
+          const elNoteDate = elNoteItem.appendChild(view.createEl('div', {
             className: 'noteDate flex-col',
             innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '-' + n.date.substring(8,10) + 
                     (n.duedate ? '<br><span class="color-purple-4">' + new Date(n.duedate).toLocaleString('default', { month: 'short' }) + '-' + n.duedate.substring(8,10) + '</span>' : ''  )
           }));
-          const elNoteDays = elNoteItem.appendChild(view.createEl(null, 'div', {
+          const elNoteDays = elNoteItem.appendChild(view.createEl('div', {
             className: 'noteDays flex-col',
             innerHTML: helper.diffToToday(new Date(n.date)) + 
                     (n.duedate ? '<br><span class="color-purple-4">' + helper.diffToToday(new Date(n.duedate)) + '</span>': '' )
           }));
           const elNoteText = elNoteItem
-            .appendChild(view.createEl(null, 'div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
+            .appendChild(view.createEl('div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
             .appendChild(view.Main.genNoteText(n, ''))
 
 
@@ -1524,7 +1513,7 @@ const modal = {
       `;
       document.body.appendChild(this.el);
 
-      const editModal =document.getElementById('editModal');
+      const editModal =eid('editModal');
       editModal.onsubmit = async (ev) => {
         ev.preventDefault();
         const btn = ev.submitter; // the button element
@@ -1602,7 +1591,7 @@ const modal = {
       */
       // Save button
 
-      EditTagForm = document.getElementById('EditTagForm');
+      EditTagForm = eid('EditTagForm');
       EditTagForm.onsubmit = async (ev) => {
         ev.preventDefault();
         const btn = ev.submitter; // the button element

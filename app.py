@@ -387,6 +387,7 @@ def api_patch_note(note_id):
     old_tags = note["tags"]
     note["text"] = cleaned_text
     note["tags"] = find_tag_in_text(cleaned_text)
+    note['date'] = data.get("date", note['date'])
     STORE_NOTES.patch(note_id, note)
 
     added_tags, removed_tags = compare_tags(old_tags, note["tags"])

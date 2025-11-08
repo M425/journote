@@ -185,7 +185,9 @@ body {
 .columnSubHeader {
     padding: 10px;
     background: #f4f4f4;
-    border-bottom: 1px solid #eeeeee
+    border-bottom: 1px solid #eeeeee;
+    max-height: 40%;
+    overflow-y: scroll;
 }
 .noteItem {
   display: flex;
