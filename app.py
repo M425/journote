@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import re
 from typing import Any, Dict
+from filter_rules import matches_filter_rule, parse_filter_rule
 from store import SQLiteStore
 
 
@@ -142,6 +143,20 @@ def get_children(tag):
     for c in children:
         children += get_children(c)
     return children
+
+@app.post("/api/notes/filter")
+def api_filter_notes():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get("rule"), str):
+        return jsonify({"error": {"status": 400, "message": "A filter rule is required."}}), 400
+    try:
+        expression = parse_filter_rule(data["rule"])
+    except ValueError as error:
+        return jsonify({"error": {"status": 400, "message": str(error)}}), 400
+
+    notes = [note for note in STORE_NOTES.find_all() if matches_filter_rule(note, expression)]
+    notes.sort(key=lambda note: (note["date"], note["timestamp"]))
+    return jsonify(notes)
 
 @app.route("/api/notes/<category>/<anonTag>", methods=["GET"])
 def api_get_tagged_notes(category, anonTag):

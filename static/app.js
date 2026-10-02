@@ -9,7 +9,7 @@ const helper = {
     if (tag.startsWith('>')) return 'Events';
     if (tag.startsWith('+')) return 'Generic';
     if (/^\d{4}-\d{2}-\d{2}$/.test(tag)) return 'Journal';
-    return 'Fulltext';
+    return 'FullText';
   },
   getAnonymizedTag(tag) {
     if (tag.startsWith('#')) return tag.substring(1);
@@ -111,6 +111,7 @@ const model = {
 // PAGES
 const page = {
   home: {
+    filterViews: {},
     render() {
       this.el = eid('app');
       this.el.innerHTML = '';
@@ -123,9 +124,14 @@ const page = {
       model.set('tagsVisible', []);
       (async () => {
         await this.addTagview(new Date().toISOString().slice(0, 10)); 
-        for (const x of tagsVisible) { await this.addTagview(x) }
+        for (const x of tagsVisible) {
+          if (this.filterViews[x]) {
+            await this.addFilterview(this.filterViews[x], null, x);
+          } else {
+            await this.addTagview(x);
+          }
+        }
       })();
-      tagsVisible.forEach(async (x) => await this.addTagview(x));
       document.addEventListener('keydown', (ev) => {
         if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
           /* Alt + n --> focus on editor */
@@ -213,6 +219,32 @@ const page = {
       view.TopBar.addTab(tag, matched);
       view.Main.addTab(tag, matched);
     },
+    async addFilterview(rule, notes = null, key = null) {
+      if (!eid('Main')) {
+        const homeReady = new Promise(resolve => {
+          window.addEventListener('journote-home-ready', resolve, {once: true});
+        });
+        const alreadyHome = location.hash === '#/home';
+        location.hash = '/home';
+        if (alreadyHome) {
+          await this.load();
+          this.render();
+          window.dispatchEvent(new Event('journote-home-ready'));
+        }
+        await homeReady;
+      }
+      const filterKey = key || `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      this.filterViews[filterKey] = rule;
+      model.set('tagsVisible', (visible) => [...visible, filterKey]);
+
+      const matched = notes ?? await api.api('/api/notes/filter', {
+        method: 'POST',
+        body: {rule}
+      });
+      const label = `Filtro: ${rule}`;
+      view.TopBar.addTab(filterKey, matched, label);
+      view.Main.addTab(filterKey, matched, label);
+    },
     activateTagview(key){
       if (key == undefined) {
         model.set('tagsActive', null);
@@ -228,6 +260,7 @@ const page = {
         console.log('[fn] removeTagview - dont remove today', tag);
         return;
       }
+      delete this.filterViews[tag];
       tagsVisible = model.set('tagsVisible', (tags) => tags.filter(t => t !== tag) );
       console.log(tagsVisible)
       view.TopBar.removeTab(tag)
@@ -252,6 +285,9 @@ const page = {
         return;
       }
       view.Main.pushNote(response.note);
+      await model.tags.reload();
+      await model.tasks.reload();
+      view.TagsBoxList.render();
     },
     async editNote(note) {
       const response = await api.api(`/api/notes/${note.id}`, {
@@ -445,18 +481,18 @@ const view = {
       
       this.tc = this.el.appendChild(view.createEl('div', {id: 'TopBarContainer', className: 'scrollable-x'}));
     },
-    addTab(tag, notes) {
+    addTab(tag, notes, label = tag) {
       // Pill
       const elPill = document.createElement('div');
       elPill.className = 'tabPill';
       elPill.dataset.key = tag;
-      elPill.title = `${tag}`;
+      elPill.title = label;
       elPill.onclick = () => page.home.activateTagview(tag);
       this.tc.appendChild(elPill);
       
       // Pill label
       const elPillLabel = document.createElement('span');
-      elPillLabel.textContent = tag;
+      elPillLabel.textContent = label;
       elPill.appendChild(elPillLabel);
 
       // Pill close button
@@ -495,7 +531,7 @@ const view = {
       view.TopBar.render();
       view.EditorWrap.render();
     },
-    addTab(tag, notes) {
+    addTab(tag, notes, label = tag) {
       // Column
       const tagObj = model.get('tags').find(t => t.name === tag);
       const elColumn = this.el_cw.appendChild(document.createElement('div'));
@@ -528,7 +564,7 @@ const view = {
       // Header
       const header = elColCont.appendChild(document.createElement('div'));
       header.className = 'columnHeader';
-      header.textContent = tag;
+      header.textContent = label;
 
       const subheader = elColCont.appendChild(document.createElement('div'));
       subheader.className = 'columnSubHeader';
@@ -1424,6 +1460,139 @@ const view = {
 
 // MODAL
 const modal = {
+  filterModal: {
+    el: null,
+    tokens: [],
+    render() {
+      if (this.el) {
+        this.el.remove();
+      }
+      this.tokens = [];
+      this.el = document.createElement('div');
+      this.el.className = 'modal';
+      this.el.innerHTML = `
+        <section class="modal-content filter-dialog" role="dialog" aria-modal="true" aria-labelledby="filter-dialog-title">
+          <h3 id="filter-dialog-title">Filtra note</h3>
+          <form id="filter-form" class="myform">
+            <div id="filter-rule-tokens" class="filter-rule-tokens" aria-live="polite"></div>
+            <label for="filter-tag-search">Tag o persona</label>
+            <input id="filter-tag-search" type="search" autocomplete="off" placeholder="Cerca #tag o @persona">
+            <div id="filter-tag-suggestions" class="filter-tag-suggestions" role="listbox"></div>
+            <div class="filter-operators" aria-label="Operatori della regola"></div>
+            <div id="filter-rule-error" class="error" role="alert"></div>
+            <div class="modal-actions">
+              <button type="button" class="btn standard" id="filter-cancel">Annulla</button>
+              <button type="submit" class="btn primary">Apri risultati</button>
+            </div>
+          </form>
+        </section>`;
+      document.body.appendChild(this.el);
+
+      const dialog = this.el;
+      const form = dialog.querySelector('#filter-form');
+      const search = dialog.querySelector('#filter-tag-search');
+      const suggestions = dialog.querySelector('#filter-tag-suggestions');
+      const tokenList = dialog.querySelector('#filter-rule-tokens');
+      const error = dialog.querySelector('#filter-rule-error');
+      const availableTags = model.get('tags') || [];
+
+      const renderTokens = () => {
+        tokenList.innerHTML = '';
+        this.tokens.forEach((token, index) => {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = `filter-rule-token ${token.kind === 'tag' ? 'filter-rule-tag' : 'filter-rule-operator'}`;
+          chip.textContent = token.value;
+          chip.title = 'Rimuovi dalla regola';
+          chip.setAttribute('aria-label', `Rimuovi ${token.value}`);
+          chip.onclick = () => {
+            this.tokens.splice(index, 1);
+            renderTokens();
+            search.focus();
+          };
+          tokenList.appendChild(chip);
+        });
+      };
+
+      const addToken = (value, kind) => {
+        this.tokens.push({value, kind});
+        error.textContent = '';
+        renderTokens();
+        search.value = '';
+        suggestions.innerHTML = '';
+        search.focus();
+      };
+
+      const renderSuggestions = () => {
+        suggestions.innerHTML = '';
+        const query = search.value.trim().toLocaleLowerCase();
+        if (!query) return;
+        availableTags
+          .filter(tag => tag.name.toLocaleLowerCase().includes(query))
+          .slice(0, 8)
+          .forEach(tag => {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'filter-tag-suggestion';
+            option.setAttribute('role', 'option');
+            option.textContent = `${tag.name} · ${tag.category}`;
+            option.onmousedown = ev => ev.preventDefault();
+            option.onclick = () => addToken(tag.name, 'tag');
+            suggestions.appendChild(option);
+          });
+      };
+
+      search.addEventListener('input', renderSuggestions);
+      search.addEventListener('keydown', ev => {
+        if (ev.key === 'Backspace' && !search.value && this.tokens.length) {
+          this.tokens.pop();
+          renderTokens();
+        } else if (ev.key === 'Enter' && suggestions.firstElementChild) {
+          ev.preventDefault();
+          suggestions.firstElementChild.click();
+        }
+      });
+
+      const operators = dialog.querySelector('.filter-operators');
+      [['!', 'not'], ['e', 'and'], ['o', 'or'], ['(', 'parentesi aperta'], [')', 'parentesi chiusa']]
+        .forEach(([value, label]) => {
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'btn standard';
+          button.textContent = value;
+          button.title = label;
+          button.onclick = () => addToken(value, 'operator');
+          operators.appendChild(button);
+        });
+
+      dialog.querySelector('#filter-cancel').onclick = () => {
+        dialog.remove();
+        this.el = null;
+      };
+      dialog.onclick = ev => {
+        if (ev.target === dialog) {
+          dialog.remove();
+          this.el = null;
+        }
+      };
+      form.onsubmit = async ev => {
+        ev.preventDefault();
+        const rule = this.tokens.map(token => token.value).join(' ');
+        try {
+          const notes = await api.api('/api/notes/filter', {
+            method: 'POST',
+            body: {rule}
+          });
+          dialog.remove();
+          this.el = null;
+          await page.home.addFilterview(rule, notes);
+        } catch (err) {
+          error.textContent = err.message;
+        }
+      };
+      search.focus();
+    }
+  },
   editModal: {
     el: null,
     render(note, editCallback) {
@@ -1558,6 +1727,7 @@ async function router() {
   if (hash === "/" || hash === "/home") {
     await page.home.load();
     page.home.render();
+    window.dispatchEvent(new Event('journote-home-ready'));
   } else if (hash === "/calendar") {
     await page.calendar.load();
     page.calendar.render();
@@ -1569,6 +1739,12 @@ async function router() {
 // RUN
 (async () => {
   window.addEventListener("hashchange", router);
+  window.addEventListener('keydown', ev => {
+    if (ev.altKey && !ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === 'f') {
+      ev.preventDefault();
+      modal.filterModal.render();
+    }
+  });
   await router();
 }
 )();

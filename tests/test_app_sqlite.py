@@ -29,11 +29,23 @@ class SQLiteApiTests(unittest.TestCase):
             "date": "2026-10-02",
         })
         self.assertEqual(created.status_code, 201)
+        with_person = self.client.post("/api/notes", json={
+            "text": "team note #work @sam",
+            "date": "2026-10-02",
+        })
+        self.assertEqual(with_person.status_code, 201)
 
         aggregate = self.client.get("/api/notes/Projects/work")
         self.assertEqual(aggregate.status_code, 200)
-        self.assertEqual([note["text"] for note in aggregate.json], ["quick note #work"])
-        self.assertEqual(self.client.get("/api/tags").status_code, 200)
+        self.assertEqual(len(aggregate.json), 2)
+        filtered = self.client.post("/api/notes/filter", json={"rule": "#work e !@sam"})
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual([note["text"] for note in filtered.json], ["quick note #work"])
+        invalid_filter = self.client.post("/api/notes/filter", json={"rule": "#work e"})
+        self.assertEqual(invalid_filter.status_code, 400)
+        tags = self.client.get("/api/tags")
+        self.assertEqual(tags.status_code, 200)
+        self.assertTrue({"#work", "@sam"}.issubset({tag["name"] for tag in tags.json}))
         self.assertTrue(DATABASE_PATH.is_file())
 
 

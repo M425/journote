@@ -2,6 +2,10 @@
 
 Journote è un'app per annotazioni rapide in Markdown. Le parole che iniziano con `#`, `@`, `>` o `+` diventano tag: selezionandone uno si apre la raccolta delle note associate. La vista calendario e le attività fanno parte dell'interfaccia esistente.
 
+## Filtri
+
+Premi `Alt+F` per aprire il filtro. Cerca un tag o una persona e selezionala dal completamento; aggiungi `!` per negare, `e` per AND o `o` per OR. `e` ha precedenza su `o`; usa le parentesi per raggruppare. Per esempio: `#progetto e !@persona o (#diario e @persona)`. I risultati si aprono in una nuova tab.
+
 ## Windows portable
 
 La build produce un singolo `dist/Journote.exe`; non installa l'applicazione e non richiede Python sulla macchina di destinazione. Al primo avvio crea `data/journote.sqlite3` accanto all'eseguibile. Tieni l'eseguibile e la cartella `data` insieme quando sposti o copi l'app; la cartella deve essere scrivibile. È richiesto il runtime Microsoft Edge WebView2, normalmente già presente nelle versioni recenti di Windows.
