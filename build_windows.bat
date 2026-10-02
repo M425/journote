@@ -8,6 +8,8 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 .venv\Scripts\python.exe -m pip install -r requirements-windows.txt
 if errorlevel 1 exit /b 1
+.venv\Scripts\python.exe generate_icons.py
+if errorlevel 1 exit /b 1
 
 tasklist /FI "IMAGENAME eq Journote.exe" 2>NUL | find /I "Journote.exe" >NUL
 if not errorlevel 1 (
@@ -15,7 +17,7 @@ if not errorlevel 1 (
 	exit /b 1
 )
 
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name Journote --add-data "static;static" --collect-all webview --hidden-import webview.platforms.edgechromium desktop.py
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name Journote --icon "static\favicon.ico" --add-data "static;static" --collect-all webview --hidden-import webview.platforms.edgechromium desktop.py
 if errorlevel 1 (
 	echo.
 	echo Build failed. If Windows denied access to Journote.exe, close the app and retry.
