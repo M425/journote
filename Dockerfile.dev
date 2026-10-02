@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     FLASK_DEBUG=1 \
-    DATA_FILE=/data/data.json
+    JOURNOTE_DATA_DIR=/data
 
 WORKDIR /app
 
@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app (you will also bind-mount in docker run for live editing)
 COPY app.py /app/app.py
+COPY store.py /app/store.py
 
 EXPOSE 8000
 VOLUME ["/data"]

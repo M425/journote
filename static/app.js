@@ -153,17 +153,18 @@ const page = {
         return;
       }
     },
-    render() {
+    async render() {
       this.el = eid('app');
       this.el.innerHTML = '';
+      const setupRequired = !(await api.api('/api/auth/status')).initialized;
       const LoginMain = this.el.appendChild(view.createEl('div', {id: 'LoginMain'}));
       LoginMain.innerHTML = `
         <div id="LoginWrap">
-          <h1>Sign In</h1>
+          <h1>${setupRequired ? 'Create Local Account' : 'Sign In'}</h1>
           <form id="loginForm" class="myform">
             <input name="username" placeholder="Username" required value=""/>
-            <input name="password" type="password" placeholder="Password" required value=""/>
-            <button type="submit" class="btn primary">Sign In</button>
+            <input name="password" type="password" placeholder="Password" required minlength="${setupRequired ? '8' : '1'}" value=""/>
+            <button type="submit" class="btn primary">${setupRequired ? 'Create Account' : 'Sign In'}</button>
             <div class="error" id="loginError"></div>
           </form>
         </div>`;
@@ -172,8 +173,18 @@ const page = {
       form.onsubmit = async (e) => {
         e.preventDefault();
         errBox.textContent = "";
-        const error = await api.signin(form.username.value, form.password.value)
-        if (error) errBox.textContent = error
+        try {
+          if (setupRequired) {
+            await api.api('/api/auth/setup', {
+              method: 'POST',
+              body: {username: form.username.value, password: form.password.value}
+            });
+          }
+          const error = await api.signin(form.username.value, form.password.value);
+          if (error) errBox.textContent = error;
+        } catch (error) {
+          errBox.textContent = error.message;
+        }
       };
     }
   },
@@ -1629,7 +1640,7 @@ async function router() {
       location.hash = "/";
     } else {
       await page.login.load()
-      page.login.render()
+      await page.login.render()
     }
   }
   else if (valid) {

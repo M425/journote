@@ -1,4 +1,12 @@
 tags.json
 notes.json
 users.json
+data/
+.venv/
+build/
+dist/
+Journote.spec
+__pycache__/
+*.py[cod]
+*.sqlite3
 chapo.code-workspace

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from flask import Flask, request, jsonify, abort, g, render_template, send_from_directory
 from flask_cors import CORS
-import os, json, time, uuid
+import os, time, uuid, sys
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import logging
 import re
@@ -10,6 +11,7 @@ import threading
 from typing import Any, Dict, List, Optional, Tuple
 from werkzeug.security import generate_password_hash, check_password_hash
 import secrets
+from store import SQLiteStore
 
 
 # ---------------------------
@@ -21,15 +23,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__, static_folder="static", static_url_path="")
+APP_DIR = Path(__file__).resolve().parent
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+PORTABLE_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else APP_DIR
+DATA_DIR = Path(os.getenv("JOURNOTE_DATA_DIR", PORTABLE_DIR / "data"))
+DATABASE_PATH = DATA_DIR / "journote.sqlite3"
+
+app = Flask(__name__, static_folder=str(RESOURCE_DIR / "static"), static_url_path="")
 CORS(app)
 
 NOTES_FILE = "notes.json"
 TAGS_FILE = "tags.json"
 USER_FILE = "users.json"
-
-notes = []
-tags = {}
 
 CATEGORIES = {
     "Projects": "#",
@@ -41,124 +46,15 @@ CATEGORIES = {
 TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "14400"))  # 4 hours
 
 # ------------------ Data ------------------
-class FileBackedStore:
-    def __init__(self, name: str, file_path: str, search_key: str):
-        self._name = name
-        self.file_path = file_path
-        self._lock = threading.RLock()
-        self._data: Dict[str, Any] = {}
-        self._load()
-        self._search_key = search_key
-        logger.info(f"FileBackedStore[{self._name}] (init) Initialized with {self.file_path}")
-
-    def _load(self):
-        """Load data from file or initialize default state."""
-        if not os.path.exists(self.file_path):
-            logger.info(f"FileBackedStore[{self._name}] (load) Data file '{self.file_path}' not found in {os.getcwd()}, initializing with default admin user")
-            self._data = []
-            self._save()
-            return
-        logger.info(f"FileBackedStore[{self._name}] (load) Loading data from {self.file_path}")
-        with open(self.file_path, "r", encoding="utf-8") as f:
-            self._data = json.load(f)
-
-    def _save(self):
-        """Atomic write: write to temp file then replace."""
-        logger.debug(f"FileBackedStore[{self._name}] (save) Persisting data to {self.file_path}")
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-
-    def find_by_id(self, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore[{self._name}] (find_by_id) value_to_search='{value_to_search}'")
-        with self._lock:
-            return next((u for u in self._data if u[self._search_key] == value_to_search), None)
-
-    def find_eq(self, key_to_search: str, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore[{self._name}] (find_eq) key_to_search='{key_to_search}', value_to_search='{value_to_search}'")
-        with self._lock:
-            return [u for u in self._data if value_to_search == u[key_to_search]]
-
-    def find_in_list(self, key_to_search: str, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore[{self._name}] (find_in_list) key_to_search='{key_to_search}', value_to_search='{value_to_search}'")
-        with self._lock:
-            return [u for u in self._data if value_to_search in u[key_to_search]]
-
-
-    def find_any(self, key_to_search: str, value_to_search: str) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore[{self._name}] (find_any) key_to_search='{key_to_search}', value_to_search='{value_to_search}'")
-        with self._lock:
-            return [u for u in self._data if u.get(key_to_search) in value_to_search]
-            
-    def find_all(self) -> Optional[Dict[str, Any]]:
-        logger.debug(f"FileBackedStore[{self._name}] (find_all)")
-        return self._data
-        
-    def _find_entity_index(self, key: str) -> Optional[int]:
-        for i, e in enumerate(self._data):
-            if e.get(self._search_key) == key:
-                return i
-        return None
-
-    def add(self, obj: Dict) -> Dict[str, Any]:
-        logger.info(f"FileBackedStore[{self._name}] (add) '{obj[self._search_key]}'")
-        with self._lock:
-            if self.find_by_id(obj[self._search_key]):
-                logger.warning(f"FileBackedStore[{self._name}] (add) Attempt to add existing object")
-                raise ValueError("Already exists.")
-            # user = {"username": username, "password_hash": generate_password_hash(password_plain)}
-            self._data.append(obj)
-            self._save()
-        return obj
-
-    def delete(self, key: str) -> None:
-        logger.info(f"FileBackedStore[{self._name}] (delete) '{key}'")
-        with self._lock:
-            idx = self._find_entity_index(key)
-            if idx is None:
-                logger.warning(f"FileBackedStore[{self._name}] (delete) id='{key}' not found for delete")
-                raise KeyError("Object not found.")
-            elem = self._data[idx]
-            del self._data[idx]
-            self._save()
-            return elem
-
-    def patch(self, key: str, obj: Dict) -> Dict[str, Any]:
-        logger.info(f"FileBackedStore[{self._name}] (patch) '{key}'")
-        with self._lock:
-            idx = self._find_entity_index(key)
-            if idx is None:
-                logger.warning(f"FileBackedStore[{self._name}] (patch) id='{key}' not found for patch")
-                raise KeyError("Object not found.")
-            current = dict(self._data[idx])
-            for k, v in obj.items():
-                if k != self._search_key:
-                    current[k] = v
-            self._data[idx] = current
-            self._save()
-            return current
-
-    def re_id(self, old_key, new_key):
-        logger.info(f"FileBackedStore[{self._name}] (re_id) '{old_key}' '{new_key}'")
-        with self._lock:
-            idx = self._find_entity_index(old_key)
-            if idx is None:
-                logger.warning(f"FileBackedStore[{self._name}] (re_id) id='{old_key}' not found for patch")
-                raise KeyError("Object not found.")
-            self._data[idx][self._search_key] = new_key
-            self._save()
-            return self._data[idx]
-            
-
-STORE_USERS = FileBackedStore('users', USER_FILE, 'username')
-STORE_NOTES = FileBackedStore('notes', NOTES_FILE, 'id')
-STORE_TAGS = FileBackedStore('tags', TAGS_FILE, 'name')
+STORE_USERS = SQLiteStore('users', DATABASE_PATH, 'username', PORTABLE_DIR / USER_FILE)
+STORE_NOTES = SQLiteStore('notes', DATABASE_PATH, 'id', PORTABLE_DIR / NOTES_FILE)
+STORE_TAGS = SQLiteStore('tags', DATABASE_PATH, 'name', PORTABLE_DIR / TAGS_FILE)
 
 # ------------------ Auth ------------------
 
 _TOKENS: Dict[str, Dict[str, Any]] = {}
 _TOKENS_LOCK = threading.RLock()
+_SETUP_LOCK = threading.RLock()
 
 def create_token(username: str) -> Tuple[str, datetime]:
     """Generate and store a new token for a user."""
@@ -292,7 +188,7 @@ def json_error(status: int, message: str):
 
 @app.route("/")
 def api_serve_index():
-    return send_from_directory("static", "index.html")
+    return send_from_directory(RESOURCE_DIR / "static", "index.html")
 
 
 @app.route("/api/health", methods=["GET"])
@@ -468,6 +364,27 @@ def api_patch_tag_tree(category, anonTag):
         ret['name'] = data['rename']
     return jsonify(ret)
 
+@app.get("/api/auth/status")
+def auth_status():
+    return jsonify({"initialized": bool(STORE_USERS.find_all())})
+
+@app.post("/api/auth/setup")
+def setup_first_user():
+    body = require_json()
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not username or len(password) < 8:
+        abort(json_error(400, "Choose a username and a password with at least 8 characters."))
+
+    with _SETUP_LOCK:
+        if STORE_USERS.find_all():
+            abort(json_error(409, "The local account is already configured."))
+        STORE_USERS.add({
+            "username": username,
+            "password_hash": generate_password_hash(password),
+        })
+    return jsonify({"status": "created"}), 201
+
 @app.post("/api/auth/signin")
 def signin():
     """Authenticate user and return token."""
@@ -502,8 +419,7 @@ def signout():
 # Dev entrypoint
 # ---------------------------
 if __name__ == "__main__":
-    # Local dev: runs Flask's reloader if FLASK_DEBUG=1 (default here)
     port = int(os.getenv("PORT", "8000"))
-    debug = os.getenv("FLASK_DEBUG", "1") == "1"
-    print(f"Starting Flask on 0.0.0.0:{port} (debug={debug}), DATA_FILE={DEFAULT_DATA_FILE}")
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    host = os.getenv("HOST", "127.0.0.1")
+    print(f"Starting Journote on {host}:{port}, database={DATABASE_PATH}")
+    app.run(host=host, port=port, debug=False)
