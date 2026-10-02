@@ -1,5 +1,26 @@
 // main js file (updated: added Calendar page)
 const eid = (el) => document.getElementById(el);
+const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;'
+}[character]));
+const sanitizeRenderedMarkdown = (root) => {
+  for (const element of root.querySelectorAll('a[href], img[src]')) {
+    const attribute = element.tagName === 'IMG' ? 'src' : 'href';
+    try {
+      const url = new URL(element.getAttribute(attribute), location.href);
+      const allowed = element.tagName === 'IMG'
+        ? ['http:', 'https:']
+        : ['http:', 'https:', 'mailto:'];
+      if (!allowed.includes(url.protocol)) element.removeAttribute(attribute);
+    } catch {
+      element.removeAttribute(attribute);
+    }
+  }
+};
 
 // HELPER
 const helper = {
@@ -76,7 +97,7 @@ const model = {
     } else {
       this[el]._v = val;
     }
-    for (sub of this[el].subs) {
+    for (const sub of this[el].subs) {
       view[sub].render();
     }
     return this[el]._v;
@@ -112,6 +133,7 @@ const model = {
 const page = {
   home: {
     filterViews: {},
+    shortcutsBound: false,
     render() {
       this.el = eid('app');
       this.el.innerHTML = '';
@@ -132,13 +154,17 @@ const page = {
           }
         }
       })();
-      document.addEventListener('keydown', (ev) => {
+      if (!this.shortcutsBound) {
+        this.shortcutsBound = true;
+        document.addEventListener('keydown', (ev) => {
+          if (!eid('Main')) return;
         if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
           /* Alt + n --> focus on editor */
           if (ev.key.toLowerCase() === 'n') {
             ev.preventDefault();
-            view.EditorWrap.easyMDE.codemirror.doc.cm.focus()
-            view.EditorWrap.easyMDE.codemirror.doc.cm.setCursor(view.EditorWrap.easyMDE.codemirror.doc.cm.lineCount(), 0);
+            const editor = view.EditorWrap.ed;
+            editor.focus();
+            editor.setSelectionRange(editor.value.length, editor.value.length);
           }
           /* Alt + t --> add today's journal entry */
           if (ev.key.toLowerCase() === 't') {
@@ -197,11 +223,25 @@ const page = {
             if (activeTab) view.Main.maximizeTab(activeTab);
           }
         }
-      });
+        });
+      }
     },
     async load() {
       await model.tags.reload();
       await model.tasks.reload();
+    },
+    async refreshMetadata() {
+      await model.tags.reload();
+      await model.tasks.reload();
+      view.TagsBoxList.render();
+      for (const [key, rule] of Object.entries(this.filterViews)) {
+        if (!model.get('tagsVisible').includes(key)) continue;
+        const notes = await api.api('/api/notes/filter', {
+          method: 'POST',
+          body: {rule}
+        });
+        view.Main.updateTab(key, notes);
+      }
     },
     async addTagview(tag) {
       console.log('[fn] addTagview', tag);
@@ -261,7 +301,7 @@ const page = {
         return;
       }
       delete this.filterViews[tag];
-      tagsVisible = model.set('tagsVisible', (tags) => tags.filter(t => t !== tag) );
+      const tagsVisible = model.set('tagsVisible', (tags) => tags.filter(t => t !== tag) );
       console.log(tagsVisible)
       view.TopBar.removeTab(tag)
       view.Main.removeTab(tag)
@@ -285,11 +325,9 @@ const page = {
         return;
       }
       view.Main.pushNote(response.note);
-      await model.tags.reload();
-      await model.tasks.reload();
-      view.TagsBoxList.render();
+      await this.refreshMetadata();
     },
-    async editNote(note) {
+    async editNote(note, previousTags = note.tags, previousDate = note.date) {
       const response = await api.api(`/api/notes/${note.id}`, {
         method: 'PATCH',
         body: {
@@ -301,8 +339,9 @@ const page = {
         alert('Error saving note');
         return;
       }
-      view.Main.editedNote(response.note);
+      view.Main.editedNote(response.note, previousTags, previousDate);
       view.EditorWrap.clear();
+      await this.refreshMetadata();
     }
   },
   calendar: {
@@ -324,13 +363,13 @@ const page = {
 const view = {
   createEl(typ, options) {
     const e = document.createElement(typ);
-    for (o in options) {
-      if (typeof options[o] == 'object') {
-        for (u in options[o]) {
-          e[o][u] = options[o][u]
+    for (const [key, value] of Object.entries(options)) {
+      if (value && typeof value === 'object') {
+        for (const [subkey, subvalue] of Object.entries(value)) {
+          e[key][subkey] = subvalue;
         }
       } else {
-        e[o] = options[o];
+        e[key] = value;
       }
     }
     return e;
@@ -340,41 +379,36 @@ const view = {
       this.currentNote = null;
       this.el = eid('EditorWrap');
       this.el.innerHTML = '';
-      this.ed = this.el.appendChild(view.createEl('textarea', {id: 'Editor', placeholder: "new note...",className: "editor-area"}));
+      this.ed = this.el.appendChild(view.createEl('textarea', {
+        id: 'Editor',
+        className: 'editor-area',
+        placeholder: 'Scrivi una nota in Markdown...',
+        rows: 5,
+        spellcheck: false
+      }));
+      this.ed.setAttribute('aria-label', 'Testo della nota in Markdown');
       const EditorCtrl = this.el.appendChild(view.createEl('div', {id: 'EditorCtrl'}));
       const EditorSaveBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorSaveBtn', className: 'btn primary', textContent: 'Save'}))
       const EditorUpdateBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorUpdateBtn', className: 'btn secondary', textContent: 'Update', style: 'display:none;'}))
       const EditorClearBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorClearBtn', className: 'btn info', textContent: 'Clear', style: 'display:none;'}))
-      
-      this.easyMDE = new EasyMDE({
-        element: eid('Editor'),
-        minHeight: '100px',
-        spellChecker: false
-      });
 
-      // let typingDebounce = null;
-      // this.easyMDE.codemirror.on("change", (ev) => {
-      //   clearTimeout(typingDebounce);
-      //   typingDebounce = setTimeout(() => {
-      //     const txt = this.easyMDE.value();
-      //     const foundTags = helper.extractTagsFromText(txt);
-      //     foundTags.forEach(tag => page.home.addTagview(tag));
-      //     const date = this.parseLeadingDate(txt);
-      //     if (date) addTagview(date);
-      //   }, 500);
-      // });
-      
-      /* Ctrl+Enter to save note */
-      this.easyMDE.codemirror.setOption("extraKeys", {
-        ...this.easyMDE.codemirror.options.extraKeys, 
-        ...{ 
-          "Ctrl-Enter": async (cm) => {
-            if (this.currentNote) {
-              await this.editNote();
-            } else {
-              await this.saveNote();
-            }
-          }
+      this.ed.addEventListener('input', () => this.resizeEditor());
+      this.ed.addEventListener('keydown', async (ev) => {
+        if (ev.key === 'Enter' && ev.ctrlKey && !ev.altKey) {
+          ev.preventDefault();
+          if (this.currentNote) await this.editNote();
+          else await this.saveNote();
+          return;
+        }
+        if (ev.key === 'Tab') {
+          ev.preventDefault();
+          this.ed.setRangeText('  ', this.ed.selectionStart, this.ed.selectionEnd, 'end');
+          return;
+        }
+        if (ev.ctrlKey && !ev.altKey && ['b', 'i', 'k'].includes(ev.key.toLowerCase())) {
+          ev.preventDefault();
+          const marker = ev.key.toLowerCase() === 'b' ? '**' : ev.key.toLowerCase() === 'i' ? '*' : '`';
+          this.insertMarkdown(marker, marker);
         }
       });
 
@@ -390,8 +424,24 @@ const view = {
       });
 
     },
+    resizeEditor() {
+      this.ed.style.height = 'auto';
+      this.ed.style.height = `${Math.min(Math.max(this.ed.scrollHeight, 120), 300)}px`;
+    },
+    insertMarkdown(prefix, suffix) {
+      const start = this.ed.selectionStart;
+      const end = this.ed.selectionEnd;
+      const selectedText = this.ed.value.slice(start, end);
+      this.ed.setRangeText(`${prefix}${selectedText}${suffix}`, start, end, 'select');
+      if (!selectedText) {
+        const cursor = start + prefix.length;
+        this.ed.setSelectionRange(cursor, cursor);
+      }
+      this.ed.focus();
+    },
     clear() {
-      this.easyMDE.value('');
+      this.ed.value = '';
+      this.ed.style.height = '';
       this.currentNote = null;
       eid('EditorSaveBtn').style.display = 'block';
       eid('EditorUpdateBtn').style.display = 'none';
@@ -399,43 +449,39 @@ const view = {
     },
     renderEditNote(note) {
       this.currentNote = note;
-      this.easyMDE.value(note.text);
+      this.ed.value = note.text;
+      this.resizeEditor();
       this.ed.focus();
-      const EditorSaveBtn = eid('EditorSaveBtn');
-      const EditorUpdateBtn = eid('EditorUpdateBtn');
-      const EditorClearBtn = eid('EditorClearBtn');
-      EditorSaveBtn.style.display = 'none';
-      EditorUpdateBtn.style.display = 'block';
-      EditorClearBtn.style.display = 'block';
-      console.log(this.easyMDE.codemirror)
-      this.easyMDE.codemirror.doc.cm.focus()
-      this.easyMDE.codemirror.doc.cm.setCursor(this.easyMDE.codemirror.doc.cm.lineCount(), 0);
+      eid('EditorSaveBtn').style.display = 'none';
+      eid('EditorUpdateBtn').style.display = 'block';
+      eid('EditorClearBtn').style.display = 'block';
+      this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
     },
     async saveNote() {
-      const raw = this.easyMDE.value();
+      const raw = this.ed.value;
       const date = this.parseLeadingDate(raw);
       await page.home.saveNote(raw, date);
-      this.easyMDE.value('');
-      rawWords = raw.split(/\s+/);
-      const newRawWords = new Array();
-      for (let w of rawWords) {
-        if (w.startsWith('#') || w.startsWith('@') || w.startsWith('>') || w.startsWith('+')) {
-          newRawWords.push(w);
-        } else break;
+      const leadingTags = [];
+      for (const word of raw.split(/\s+/)) {
+        if (word.startsWith('#') || word.startsWith('@') || word.startsWith('>') || word.startsWith('+')) {
+          leadingTags.push(word);
+        } else {
+          break;
+        }
       }
-      for (let w of newRawWords) {
-        this.easyMDE.value(this.easyMDE.value() + w + ' ');
-      }
+      this.ed.value = leadingTags.length ? `${leadingTags.join(' ')} ` : '';
+      this.resizeEditor();
       this.ed.focus();
     },
     async editNote() {
-      const raw = this.easyMDE.value();
-      if(!raw) return;
+      const raw = this.ed.value;
+      if (!raw) return;
       const date = this.parseLeadingDate(raw);
+      const previousTags = [...this.currentNote.tags];
+      const previousDate = this.currentNote.date;
       this.currentNote.text = raw;
       this.currentNote.date = date || this.currentNote.date;
-      console.log('[fn] EditorWrap.editNote', this.currentNote);
-      await page.home.editNote(this.currentNote);
+      await page.home.editNote(this.currentNote, previousTags, previousDate);
     },
     parseLeadingDate(text) {
       const m = text.trim().match(/^(\d{4}-\d{2}-\d{2})\b/);
@@ -538,7 +584,7 @@ const view = {
       elColumn.className = 'column';
       elColumn.dataset.key = tag;
       elColumn.style.position = 'relative';   // needed for resizer positioning
-      elColumn.style.flex = '0 0 700px';      // default width
+      elColumn.style.flex = '0 0 420px';
 
       // Add resize handle
       const resizeHandle = document.createElement('div');
@@ -579,10 +625,10 @@ const view = {
           console.error('tagObj is undefined');
         }
       } else {
-        var conv = new showdown.Converter({metadata: true});
-        var content = conv.makeHtml(tagObj.content);
-        var metadata = conv.getMetadata(); // returns an object with
+        const conv = new showdown.Converter({metadata: true, sanitize: true});
+        const content = conv.makeHtml(tagObj.content || '');
         subheader.innerHTML = content;
+        sanitizeRenderedMarkdown(subheader);
       }
       subheader.style.display = 'block';
 
@@ -632,9 +678,8 @@ const view = {
 
       // Load notes for this tag
       if(notes.length === 0) {
-        elNoteList.textContent = '';
+        this.showEmptyState(elNoteList, tag);
       } else {
-        elNoteList.textContent = '';
         notes.forEach(n => elNoteList.appendChild(this.genNoteItem(n, tag)) );
         setTimeout(() => {
           console.log('Scrolling note list to bottom', tag);
@@ -683,6 +728,28 @@ const view = {
       }
 
     }, 
+    updateTab(tag, notes) {
+      const column = this.el_cw.querySelector(`.column[data-key="${tag}"]`);
+      const noteList = column?.querySelector('.notesList');
+      if (!noteList) return;
+      if (notes.length === 0) {
+        this.showEmptyState(noteList, tag);
+        return;
+      }
+      noteList.replaceChildren(...notes.map(note => this.genNoteItem(note, tag)));
+    },
+    showEmptyState(noteList, tag) {
+      const message = document.createElement('p');
+      message.className = 'empty-state';
+      if (tag.startsWith('filter-')) {
+        message.textContent = 'Nessuna nota corrisponde a questa regola.';
+      } else if (helper.getClassfromTag(tag) === 'Journal') {
+        message.textContent = 'Nessuna nota per questa data.';
+      } else {
+        message.textContent = 'Nessuna nota in questa raccolta.';
+      }
+      noteList.replaceChildren(message);
+    },
     maximizeTab(key) {
       console.log('[fn] maximizeTab', key);
       const col = this.el_cw.querySelector(`.column[data-key="${key}"]`);
@@ -740,9 +807,8 @@ const view = {
           if (!confirm('Delete this note?')) return;
           const ok = await api.api(`/api/notes/${n.id}`, {method: "DELETE"});
           if (ok && ok.status === 'deleted') {
-            console.log('Note deleted');
-            elNoteItem.remove();
-            await model.tags.reload();
+            document.querySelectorAll(`.noteItem[data-id="${n.id}"]`).forEach(item => item.remove());
+            await page.home.refreshMetadata();
           }
         }
       }));
@@ -752,25 +818,50 @@ const view = {
     genNoteText(n, currentTag) {
       const elNoteText = document.createElement('div');
       elNoteText.className = 'noteText';
-      let noteText = n.text;
-      let noteTags = helper.extractTagsFromText(n.text, false);
-      if (noteTags && noteTags.length) {
-        noteTags.forEach(foundTag => {
-          let foundTagText = foundTag;
-          const lbl_class = helper.getClassfromTag(foundTag);
-          if(foundTag == currentTag) foundTagText = '●'
-          let labelHtml = `<span
-            class="lbl lbl-${lbl_class}"
-            onclick="page.home.addTagview('${foundTag}')"
-            data-tag="${foundTag}">${foundTagText}</span>`;
-          // Replace tag in text with label
-          noteText = noteText.replace(new RegExp(foundTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), labelHtml);
-        });
+      let noteText = escapeHTML(n.text);
+      const noteKey = String(n.id).replace(/[^A-Za-z0-9]/g, '');
+      const labels = helper.extractTagsFromText(n.text, false).map((tag, index) => {
+        const token = `JOURNOTETAG${noteKey}X${index}END`;
+        noteText = noteText.replace(new RegExp(tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), token);
+        return {tag, token};
+      });
+      const converter = new showdown.Converter({metadata: true, sanitize: true});
+      elNoteText.innerHTML = converter.makeHtml(noteText);
+        sanitizeRenderedMarkdown(elNoteText);
+
+      if (labels.length) {
+        const labelByToken = new Map(labels.map(label => [label.token, label.tag]));
+        const tokenPattern = new RegExp(`(${labels.map(label => label.token).join('|')})`, 'g');
+        const walker = document.createTreeWalker(elNoteText, NodeFilter.SHOW_TEXT);
+        const textNodes = [];
+        while (walker.nextNode()) textNodes.push(walker.currentNode);
+
+        for (const node of textNodes) {
+          const parts = node.nodeValue.split(tokenPattern);
+          if (parts.length === 1) continue;
+          const content = document.createDocumentFragment();
+          parts.forEach((part, index) => {
+            if (labelByToken.has(part)) {
+              const tag = labelByToken.get(part);
+              if (node.parentElement?.closest('pre, code')) {
+                content.appendChild(document.createTextNode(tag));
+                return;
+              }
+              const label = document.createElement('button');
+              label.type = 'button';
+              label.className = `lbl lbl-${helper.getClassfromTag(tag)}`;
+              label.dataset.tag = tag;
+              label.textContent = tag === currentTag ? '●' : tag;
+              label.title = `Apri ${tag}`;
+              label.addEventListener('click', () => page.home.addTagview(tag));
+              content.appendChild(label);
+            } else if (part) {
+              content.appendChild(document.createTextNode(part));
+            }
+          });
+          node.replaceWith(content);
+        }
       }
-      var conv = new showdown.Converter({metadata: true});
-      noteText = conv.makeHtml(noteText);
-      var metadata = conv.getMetadata(); // returns an object with
-      elNoteText.innerHTML = noteText;
       return elNoteText
     },
     makeResizable(colEl, handle) {
@@ -796,29 +887,20 @@ const view = {
 
       handle.addEventListener('mousedown', onMouseDown);
     },
-    editedNote(note) {
+    editedNote(note, previousTags = [], previousDate = note.date) {
       console.log('[fn] editedNote', note);
-      // Update all tagviews containing this note
-      for (let tag of note.tags) {
-        if (model.get('tagsVisible').includes(tag)) {
-          const noteList = document.querySelector(`.column[data-key="${tag}"] .notesList`);
-          if (noteList) {
-            const elNoteItemOld = noteList.querySelector(`.noteItem[data-id="${note.id}"]`);
-            if (elNoteItemOld) {
-              const newElNoteItem = this.genNoteItem(note, tag);
-              elNoteItemOld.replaceWith(newElNoteItem);
-            }
-          }
-        }
-      }
-      if (model.get('tagsVisible').includes(note.date)) {
-        const noteList = document.querySelector(`.column[data-key="${note.date}"] .notesList`);
-        if (noteList) {
-          const elNoteItemOld = noteList.querySelector(`.noteItem[data-id="${note.id}"]`);
-          if (elNoteItemOld) {
-            const newElNoteItem = this.genNoteItem(note, note.date);
-            elNoteItemOld.replaceWith(newElNoteItem);
-          }
+      const affectedKeys = new Set([...previousTags, ...note.tags, previousDate, note.date]);
+      for (const key of affectedKeys) {
+        if (page.home.filterViews[key] || !model.get('tagsVisible').includes(key)) continue;
+        const noteList = document.querySelector(`.column[data-key="${key}"] .notesList`);
+        if (!noteList) continue;
+        const existing = noteList.querySelector(`.noteItem[data-id="${note.id}"]`);
+        const belongs = note.tags.includes(key) || note.date === key;
+        if (belongs) {
+          const updated = this.genNoteItem(note, key);
+          existing ? existing.replaceWith(updated) : noteList.appendChild(updated);
+        } else {
+          existing?.remove();
         }
       }
     }
@@ -941,13 +1023,13 @@ const view = {
       this.el.innerHTML = '';
 
       const sectionsDiv = {
-        'Tags': { el: document.createElement('div'), filter: ['Projects', 'Event', 'Generic']},
+        'Tags': { el: document.createElement('div'), filter: ['Projects', 'Events', 'Generic']},
         'Persons': { el: document.createElement('div'), filter: ['Persons']}
       };
-      modelTagsBoxEye = model.get('tagsBox_eye');
-      modelTagsBoxTask= model.get('tagsBox_task');
-      tags = model.get('tags');
-      tasks = model.get('tasks');
+      const modelTagsBoxEye = model.get('tagsBox_eye');
+      const modelTagsBoxTask = model.get('tagsBox_task');
+      const tags = model.get('tags');
+      const tasks = model.get('tasks');
 
       Object.entries(sectionsDiv).forEach(([secName, {el, filter}]) => {
         el.className = 'tagSection';
@@ -1013,11 +1095,7 @@ const view = {
     noDiscendentTask(tag) {
       if (tag.tasks.length != 0)
         return true;
-      anyDiscendentTask = false;
-      tag.children.forEach(x => {
-        anyDiscendentTask = anyDiscendentTask || this.noDiscendentTask(x);
-      })
-      return anyDiscendentTask;
+      return tag.children.some(child => this.noDiscendentTask(child));
     },
     createTreeElement(tag, tagsEyeActive, tagsTaskActive, depth) {
       const li = document.createElement('li');
@@ -1603,7 +1681,7 @@ const modal = {
         <div class="modal-content">
           <h3>Edit Note</h3>
           <form id="editModal" class="myform" style="flex: 1">
-            <textarea name="text" class="modal-textarea">${note.text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+            <textarea name="text" class="modal-textarea">${escapeHTML(note.text)}</textarea>
             <div>duedate: ${note.duedate} </div>
             <div>task: ${note.task} </div>
             <div class="modal-actions">
@@ -1632,8 +1710,10 @@ const modal = {
             alert('Error saving note');
             return;
           }
-          editCallback?.(updated.note);
+          editCallback?.(updated.note, note.tags, note.date);
           await model.tags.reload();
+          await model.tasks.reload();
+          view.TagsBoxList.render();
           this.el.remove();
           this.el = null;
         }
@@ -1664,15 +1744,15 @@ const modal = {
             </label>
             <div>
               <label for="rename">Rename Tag:</label>
-              <input type="text" id="editform-rename" name="rename" value="${tagObj.name}" placeholder="Enter new name">
+              <input type="text" id="editform-rename" name="rename" value="${escapeHTML(tagObj.name)}" placeholder="Enter new name">
             </div>
             <div>
               <label for="parent">Parent Tag:</label>
-              <input type="text" id="editform-parent" name="parent" value="${tagObj.parent == null ? '' : tagObj.parent.replace(/"/g, '&quot;') || ''}" placeholder="Enter parent tag">
+              <input type="text" id="editform-parent" name="parent" value="${escapeHTML(tagObj.parent)}" placeholder="Enter parent tag">
             </div>
             <div style="flex: 1; display: flex; flex-direction: column">
               <label for="content">Content:</label>
-              <textarea style="flex:1" id="editform-content" name="content" class="modal-textarea">${tagObj.content.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+              <textarea style="flex:1" id="editform-content" name="content" class="modal-textarea">${escapeHTML(tagObj.content)}</textarea>
             </div>
             <div ></div>
             <div class="modal-actions">
@@ -1693,7 +1773,7 @@ const modal = {
       */
       // Save button
 
-      EditTagForm = eid('EditTagForm');
+      const EditTagForm = eid('EditTagForm');
       EditTagForm.onsubmit = async (ev) => {
         ev.preventDefault();
         const btn = ev.submitter; // the button element

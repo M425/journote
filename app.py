@@ -208,8 +208,10 @@ def api_delete_note(note_id):
     note = STORE_NOTES.delete(note_id)
     removed_tags = []
     for tag in note['tags']:
-        if STORE_NOTES.find_in_list('tags', tag) is None and STORE_TAGS.find_by_id(tag)['content'] == '':
+        tag_record = STORE_TAGS.find_by_id(tag)
+        if not STORE_NOTES.find_in_list('tags', tag) and tag_record and tag_record.get('content', '') == '':
             removed_tags.append(tag)
+            STORE_TAGS.delete(tag)
     return jsonify({"status": "deleted", "removed_tags": removed_tags})
 
 @app.route("/api/notes/<note_id>", methods=["PATCH"])

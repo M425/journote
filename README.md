@@ -2,6 +2,10 @@
 
 Journote è un'app per annotazioni rapide in Markdown. Le parole che iniziano con `#`, `@`, `>` o `+` diventano tag: selezionandone uno si apre la raccolta delle note associate. La vista calendario e le attività fanno parte dell'interfaccia esistente.
 
+## Editor Markdown
+
+Scrivi la sintassi direttamente nel campo nota: `**grassetto**`, `*corsivo*`, `` `codice` ``, `# titolo`, liste e link Markdown. Senza selezione, `Ctrl+B`, `Ctrl+I` e `Ctrl+K` inseriscono rispettivamente i delimitatori; con una selezione la racchiudono. `Tab` inserisce due spazi e `Ctrl+Enter` salva o aggiorna la nota.
+
 ## Filtri
 
 Premi `Alt+F` per aprire il filtro. Cerca un tag o una persona e selezionala dal completamento; aggiungi `!` per negare, `e` per AND o `o` per OR. `e` ha precedenza su `o`; usa le parentesi per raggruppare. Per esempio: `#progetto e !@persona o (#diario e @persona)`. I risultati si aprono in una nuova tab.

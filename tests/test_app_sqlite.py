@@ -46,6 +46,14 @@ class SQLiteApiTests(unittest.TestCase):
         tags = self.client.get("/api/tags")
         self.assertEqual(tags.status_code, 200)
         self.assertTrue({"#work", "@sam"}.issubset({tag["name"] for tag in tags.json}))
+
+        orphaned_tag_note = self.client.post("/api/notes", json={
+            "text": "one-off #delete-me",
+            "date": "2026-10-02",
+        })
+        deleted = self.client.delete(f"/api/notes/{orphaned_tag_note.json['note']['id']}")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertIn("#delete-me", deleted.json["removed_tags"])
         self.assertTrue(DATABASE_PATH.is_file())
 
 
