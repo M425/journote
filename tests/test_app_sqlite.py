@@ -9,6 +9,12 @@ os.environ["JOURNOTE_DATA_DIR"] = _data_directory.name
 from app import DATABASE_PATH, STORE_NOTES, STORE_TAGS, STORE_USERS, _TOKENS, app
 
 
+def tearDownModule():
+    for store in (STORE_NOTES, STORE_TAGS, STORE_USERS):
+        store.close()
+    _data_directory.cleanup()
+
+
 class SQLiteApiTests(unittest.TestCase):
     def setUp(self):
         for store in (STORE_NOTES, STORE_TAGS, STORE_USERS):
