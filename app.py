@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from flask import Flask, request, jsonify, abort, render_template, send_from_directory
+from flask import Flask, request, jsonify, abort, render_template, send_from_directory, send_file
 from flask_cors import CORS
 import os, time, uuid, sys
 from pathlib import Path
@@ -29,6 +29,16 @@ DATABASE_PATH = DATA_DIR / "journote.sqlite3"
 
 app = Flask(__name__, static_folder=str(RESOURCE_DIR / "static"), static_url_path="")
 CORS(app)
+MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_SIZE_BYTES + 64 * 1024
+
+IMAGE_FORMATS = {
+    "image/png": (".png", lambda data: data.startswith(b"\x89PNG\r\n\x1a\n")),
+    "image/jpeg": (".jpg", lambda data: data.startswith(b"\xff\xd8\xff")),
+    "image/gif": (".gif", lambda data: data.startswith((b"GIF87a", b"GIF89a"))),
+    "image/webp": (".webp", lambda data: len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP"),
+    "image/bmp": (".bmp", lambda data: data.startswith(b"BM")),
+}
 
 NOTES_FILE = "notes.json"
 TAGS_FILE = "tags.json"
@@ -157,6 +167,50 @@ def api_filter_notes():
     notes = [note for note in STORE_NOTES.find_all() if matches_filter_rule(note, expression)]
     notes.sort(key=lambda note: (note["date"], note["timestamp"]))
     return jsonify(notes)
+
+@app.post("/api/images")
+def api_upload_image():
+    uploaded = request.files.get("image")
+    if uploaded is None:
+        return jsonify({"error": {"status": 400, "message": "An image file is required."}}), 400
+
+    image_format = IMAGE_FORMATS.get(uploaded.mimetype)
+    if image_format is None:
+        return jsonify({"error": {"status": 415, "message": "Unsupported image format."}}), 415
+
+    contents = uploaded.stream.read(MAX_IMAGE_SIZE_BYTES + 1)
+    if not contents:
+        return jsonify({"error": {"status": 400, "message": "The image file is empty."}}), 400
+    if len(contents) > MAX_IMAGE_SIZE_BYTES:
+        return jsonify({"error": {"status": 413, "message": "Images must be 10 MB or smaller."}}), 413
+    if not image_format[1](contents):
+        return jsonify({"error": {"status": 400, "message": "The uploaded file is not a valid image."}}), 400
+
+    image_id = str(uuid.uuid4())
+    image_dir = DATA_DIR / "img"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    (image_dir / f"{image_id}{image_format[0]}").write_bytes(contents)
+    image_url = f"/api/images/{image_id}"
+    return jsonify({
+        "id": image_id,
+        "url": image_url,
+        "markdown": f"![Immagine]({image_url})",
+    }), 201
+
+@app.get("/api/images/<image_id>")
+def api_get_image(image_id):
+    try:
+        if str(uuid.UUID(image_id)) != image_id:
+            raise ValueError
+    except ValueError:
+        abort(404)
+
+    image_dir = DATA_DIR / "img"
+    for mimetype, (extension, _) in IMAGE_FORMATS.items():
+        image_path = image_dir / f"{image_id}{extension}"
+        if image_path.is_file():
+            return send_file(image_path, mimetype=mimetype, as_attachment=False, conditional=True)
+    abort(404)
 
 @app.route("/api/notes/<category>/<anonTag>", methods=["GET"])
 def api_get_tagged_notes(category, anonTag):

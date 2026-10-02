@@ -64,7 +64,9 @@ const api = {
   async api(url, opts = {}){
     console.log('[fn] api ' + url)
     opts.headers = opts.headers || {};
-    if (opts.body && typeof opts.body !== "string") {
+    if (opts.body && typeof FormData !== 'undefined' && opts.body instanceof FormData) {
+      delete opts.headers['Content-Type'];
+    } else if (opts.body && typeof opts.body !== "string") {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(opts.body);
     }
@@ -379,7 +381,8 @@ const view = {
       this.currentNote = null;
       this.el = eid('EditorWrap');
       this.el.innerHTML = '';
-      this.ed = this.el.appendChild(view.createEl('textarea', {
+      this.editorField = this.el.appendChild(view.createEl('div', {className: 'editor-field'}));
+      this.ed = this.editorField.appendChild(view.createEl('textarea', {
         id: 'Editor',
         className: 'editor-area',
         placeholder: 'Scrivi una nota in Markdown...',
@@ -387,15 +390,64 @@ const view = {
         spellcheck: false
       }));
       this.ed.setAttribute('aria-label', 'Testo della nota in Markdown');
+      this.status = this.editorField.appendChild(view.createEl('div', {
+        id: 'EditorStatus',
+        className: 'editor-status'
+      }));
+      this.status.setAttribute('aria-live', 'polite');
+      this.pendingImageUploads = 0;
       const EditorCtrl = this.el.appendChild(view.createEl('div', {id: 'EditorCtrl'}));
       const EditorSaveBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorSaveBtn', className: 'btn primary', textContent: 'Save'}))
       const EditorUpdateBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorUpdateBtn', className: 'btn secondary', textContent: 'Update', style: 'display:none;'}))
       const EditorClearBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorClearBtn', className: 'btn info', textContent: 'Clear', style: 'display:none;'}))
 
       this.ed.addEventListener('input', () => this.resizeEditor());
+      this.ed.addEventListener('paste', async (ev) => {
+        const imageItem = Array.from(ev.clipboardData?.items || []).find(item =>
+          item.kind === 'file' && item.type.startsWith('image/')
+        );
+        const imageFile = imageItem?.getAsFile();
+        if (!imageFile) return;
+
+        ev.preventDefault();
+        const token = `journote-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const placeholder = `![Immagine in caricamento](pending:${token})`;
+        this.ed.setRangeText(placeholder, this.ed.selectionStart, this.ed.selectionEnd, 'end');
+        this.pendingImageUploads += 1;
+        this.updateImageUploadState();
+
+        const formData = new FormData();
+        formData.append('image', imageFile, imageFile.name || 'clipboard-image');
+        try {
+          const uploaded = await api.api('/api/images', {method: 'POST', body: formData});
+          const markerPosition = this.ed.value.indexOf(placeholder);
+          if (markerPosition >= 0) {
+            this.ed.setRangeText(
+              uploaded.markdown,
+              markerPosition,
+              markerPosition + placeholder.length,
+              'preserve'
+            );
+          }
+          this.status.textContent = 'Immagine inserita nella nota.';
+          this.status.dataset.state = 'success';
+        } catch (error) {
+          const markerPosition = this.ed.value.indexOf(placeholder);
+          if (markerPosition >= 0) {
+            this.ed.setRangeText('', markerPosition, markerPosition + placeholder.length, 'preserve');
+          }
+          this.status.textContent = `Immagine non inserita: ${error.message}`;
+          this.status.dataset.state = 'error';
+        } finally {
+          this.pendingImageUploads -= 1;
+          this.updateImageUploadState();
+          this.resizeEditor();
+        }
+      });
       this.ed.addEventListener('keydown', async (ev) => {
         if (ev.key === 'Enter' && ev.ctrlKey && !ev.altKey) {
           ev.preventDefault();
+          if (this.pendingImageUploads) return;
           if (this.currentNote) await this.editNote();
           else await this.saveNote();
           return;
@@ -414,12 +466,14 @@ const view = {
 
       /* Button events */
       EditorSaveBtn.addEventListener('click', async (ev) => {
+        if (this.pendingImageUploads) return;
         await this.saveNote()
       });
       EditorClearBtn.addEventListener('click', (ev) => {
         this.clear();
       });
       EditorUpdateBtn.addEventListener('click', async (ev) => {
+        if (this.pendingImageUploads) return;
         this.editNote();
       });
 
@@ -427,6 +481,15 @@ const view = {
     resizeEditor() {
       this.ed.style.height = 'auto';
       this.ed.style.height = `${Math.min(Math.max(this.ed.scrollHeight, 120), 300)}px`;
+    },
+    updateImageUploadState() {
+      const busy = this.pendingImageUploads > 0;
+      eid('EditorSaveBtn').disabled = busy;
+      eid('EditorUpdateBtn').disabled = busy;
+      if (busy) {
+        this.status.textContent = `Caricamento immagine${this.pendingImageUploads > 1 ? ` (${this.pendingImageUploads})` : ''}...`;
+        this.status.dataset.state = 'loading';
+      }
     },
     insertMarkdown(prefix, suffix) {
       const start = this.ed.selectionStart;
@@ -442,6 +505,8 @@ const view = {
     clear() {
       this.ed.value = '';
       this.ed.style.height = '';
+      this.status.textContent = '';
+      this.status.dataset.state = '';
       this.currentNote = null;
       eid('EditorSaveBtn').style.display = 'block';
       eid('EditorUpdateBtn').style.display = 'none';

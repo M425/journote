@@ -1234,7 +1234,16 @@ select:focus-visible,
   background: #f7faf8;
 }
 
+.editor-field {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 #Editor {
+  flex: 1 1 auto;
   min-height: 120px;
   max-height: 300px;
   padding: 12px;
@@ -1247,6 +1256,16 @@ select:focus-visible,
   line-height: 1.5;
   outline: none;
 }
+
+.editor-status {
+  min-height: 1rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.3;
+}
+
+.editor-status[data-state="success"] { color: var(--accent-strong); }
+.editor-status[data-state="error"] { color: #a54436; }
 
 #Editor:focus {
   border-color: #86ad96;
@@ -1274,6 +1293,11 @@ select:focus-visible,
 #EditorCtrl .btn:hover {
   border-color: var(--accent-strong);
   background: var(--accent-strong);
+}
+
+#EditorCtrl .btn:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 #CalendarMain {
@@ -1612,6 +1636,10 @@ select:focus-visible,
     flex-direction: column;
     gap: 8px;
     padding: 8px;
+  }
+
+  .editor-field {
+    width: 100%;
   }
 
   #EditorCtrl {

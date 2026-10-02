@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from io import BytesIO
 
 
 _data_directory = tempfile.TemporaryDirectory()
@@ -55,6 +56,35 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertIn("#delete-me", deleted.json["removed_tags"])
         self.assertTrue(DATABASE_PATH.is_file())
+
+    def test_clipboard_image_upload_and_retrieval(self):
+        image_bytes = b"\x89PNG\r\n\x1a\nclipboard-image-test"
+        uploaded = self.client.post("/api/images", data={
+            "image": (BytesIO(image_bytes), "clipboard.png", "image/png"),
+        })
+        self.assertEqual(uploaded.status_code, 201)
+        self.assertRegex(uploaded.json["id"], r"^[0-9a-f-]{36}$")
+        self.assertEqual(uploaded.json["markdown"], f"![Immagine]({uploaded.json['url']})")
+        image_path = DATABASE_PATH.parent / "img" / f"{uploaded.json['id']}.png"
+        self.assertTrue(image_path.is_file())
+
+        retrieved = self.client.get(uploaded.json["url"])
+        try:
+            self.assertEqual(retrieved.status_code, 200)
+            self.assertEqual(retrieved.mimetype, "image/png")
+            self.assertEqual(retrieved.data, image_bytes)
+        finally:
+            retrieved.close()
+
+        invalid = self.client.post("/api/images", data={
+            "image": (BytesIO(b"not an image"), "clipboard.png", "image/png"),
+        })
+        self.assertEqual(invalid.status_code, 400)
+        unsupported = self.client.post("/api/images", data={
+            "image": (BytesIO(b"data"), "clipboard.txt", "text/plain"),
+        })
+        self.assertEqual(unsupported.status_code, 415)
+        self.assertEqual(self.client.get("/api/images/not-a-uuid").status_code, 404)
 
 
 if __name__ == "__main__":
