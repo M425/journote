@@ -43,20 +43,12 @@ const api = {
   async api(url, opts = {}){
     console.log('[fn] api ' + url)
     opts.headers = opts.headers || {};
-    if (this.token()) {
-      opts.headers["Authorization"] = "Bearer " + this.token();
-    }
     if (opts.body && typeof opts.body !== "string") {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(opts.body);
     }
     const res = await fetch(url, opts);
     console.debug("[fn] api " + url + " executed", res.status);
-    if (res.status === 401) {
-      localStorage.removeItem("token");
-      location.hash = "/";
-      throw new Error("Unauthorized");
-    }
     if (!res.ok) {
       const err = await res.json().catch(()=>({}));
       throw new Error(err.error?.message || res.statusText);
@@ -73,33 +65,6 @@ const api = {
     const notes = await api.api(`/api/notes/${category}/${anonTag}`);
     return notes;
   },
-  token() {
-    return localStorage.getItem("token");
-  },
-  async checkToken() {
-    if (!this.token()) return false;
-    try {
-      await this.api("/api/health");
-      return true;
-    } catch {
-      return false;
-    }
-  },
-  async signin(username, password) {
-    const data = {
-      username: username,
-      password: password
-    };
-    try {
-      const res = await this.api("/api/auth/signin", {method: "POST", body: data});
-      console.log('[fn] api.signin response', res);
-      localStorage.setItem("token", res.token);
-      location.hash = "/home";
-      return null;
-    } catch (err) {
-      return err.message;
-    }
-  }
 };
 
 // MODEL
@@ -145,49 +110,6 @@ const model = {
 
 // PAGES
 const page = {
-  login: {
-    async load() {
-      const valid = await api.checkToken();
-      if (valid) {
-        location.hash = "/home";
-        return;
-      }
-    },
-    async render() {
-      this.el = eid('app');
-      this.el.innerHTML = '';
-      const setupRequired = !(await api.api('/api/auth/status')).initialized;
-      const LoginMain = this.el.appendChild(view.createEl('div', {id: 'LoginMain'}));
-      LoginMain.innerHTML = `
-        <div id="LoginWrap">
-          <h1>${setupRequired ? 'Create Local Account' : 'Sign In'}</h1>
-          <form id="loginForm" class="myform">
-            <input name="username" placeholder="Username" required value=""/>
-            <input name="password" type="password" placeholder="Password" required minlength="${setupRequired ? '8' : '1'}" value=""/>
-            <button type="submit" class="btn primary">${setupRequired ? 'Create Account' : 'Sign In'}</button>
-            <div class="error" id="loginError"></div>
-          </form>
-        </div>`;
-      const form = eid("loginForm");
-      const errBox = eid("loginError");
-      form.onsubmit = async (e) => {
-        e.preventDefault();
-        errBox.textContent = "";
-        try {
-          if (setupRequired) {
-            await api.api('/api/auth/setup', {
-              method: 'POST',
-              body: {username: form.username.value, password: form.password.value}
-            });
-          }
-          const error = await api.signin(form.username.value, form.password.value);
-          if (error) errBox.textContent = error;
-        } catch (error) {
-          errBox.textContent = error.message;
-        }
-      };
-    }
-  },
   home: {
     render() {
       this.el = eid('app');
@@ -1633,29 +1555,14 @@ const modal = {
 // ROUTER
 async function router() {
   const hash = location.hash.replace(/^#/, "") || "/";
-  const valid = await api.checkToken();
-  console.log(`[fn] router: Token: ${valid}, location:${hash}`);
-  if (!valid) { 
-    if (hash != "/") {
-      location.hash = "/";
-    } else {
-      await page.login.load()
-      await page.login.render()
-    }
-  }
-  else if (valid) {
-    if (hash === "/") {
-      location.hash = "/home"
-    } else if (hash === "/home") {
-      await page.home.load()
-      page.home.render()
-    } else if (hash === "/calendar") {
-      // new calendar route
-      await page.calendar.load();
-      page.calendar.render();
-    } else {
-      app.innerHTML = "<p>Not found</p>";
-    }
+  if (hash === "/" || hash === "/home") {
+    await page.home.load();
+    page.home.render();
+  } else if (hash === "/calendar") {
+    await page.calendar.load();
+    page.calendar.render();
+  } else {
+    app.innerHTML = "<p>Not found</p>";
   }
 }
 

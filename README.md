@@ -8,7 +8,9 @@ La build produce un singolo `dist/Journote.exe`; non installa l'applicazione e n
 
 Per creare l'eseguibile, esegui `build_windows.bat` su Windows con Python 3.10 o successivo. La procedura scarica le dipendenze nel virtual environment `.venv` e crea il file in `dist`.
 
-Al primo avvio Journote chiede di creare un account locale con password di almeno 8 caratteri. I dati restano sul dispositivo. Se nella cartella dell'app sono presenti `notes.json`, `tags.json` o `users.json`, vengono importati nel database al primo avvio; i JSON originali non vengono rimossi.
+Non è richiesto un account: Journote si apre direttamente. Le note e i tag restano nel database sul dispositivo. Se nella cartella dell'app sono presenti `notes.json` o `tags.json`, vengono importati al primo avvio; i JSON originali non vengono rimossi.
+
+L'app non applica autenticazione. Mantieni il server associato a `127.0.0.1` e non esporre la porta ad altri dispositivi o reti.
 
 La schermata attuale carica alcuni componenti, icone e font da CDN, quindi per il loro caricamento serve una connessione Internet. Le note e il database sono locali.
 

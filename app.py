@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from flask import Flask, request, jsonify, abort, g, render_template, send_from_directory
+from flask import Flask, request, jsonify, abort, render_template, send_from_directory
 from flask_cors import CORS
 import os, time, uuid, sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import logging
 import re
-import threading
-from typing import Any, Dict, List, Optional, Tuple
-from werkzeug.security import generate_password_hash, check_password_hash
-import secrets
+from typing import Any, Dict
 from store import SQLiteStore
 
 
@@ -34,8 +31,6 @@ CORS(app)
 
 NOTES_FILE = "notes.json"
 TAGS_FILE = "tags.json"
-USER_FILE = "users.json"
-
 CATEGORIES = {
     "Projects": "#",
     "Persons": "@",
@@ -43,64 +38,9 @@ CATEGORIES = {
     "Generic": "+",
     "Journal": ""
 }
-TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "14400"))  # 4 hours
-
 # ------------------ Data ------------------
-STORE_USERS = SQLiteStore('users', DATABASE_PATH, 'username', PORTABLE_DIR / USER_FILE)
 STORE_NOTES = SQLiteStore('notes', DATABASE_PATH, 'id', PORTABLE_DIR / NOTES_FILE)
 STORE_TAGS = SQLiteStore('tags', DATABASE_PATH, 'name', PORTABLE_DIR / TAGS_FILE)
-
-# ------------------ Auth ------------------
-
-_TOKENS: Dict[str, Dict[str, Any]] = {}
-_TOKENS_LOCK = threading.RLock()
-_SETUP_LOCK = threading.RLock()
-
-def create_token(username: str) -> Tuple[str, datetime]:
-    """Generate and store a new token for a user."""
-    exp = datetime.now(timezone.utc) + timedelta(seconds=TOKEN_TTL_SECONDS)
-    token = secrets.token_urlsafe(32)
-    with _TOKENS_LOCK:
-        _TOKENS[token] = {"username": username, "exp": exp}
-    logger.info(f"Issued new token for user={username}, expires={exp}")
-    return token, exp
-
-def _get_token_from_header() -> Optional[str]:
-    """Extract Bearer token from Authorization header."""
-    header = request.headers.get("Authorization", "")
-    if not header.startswith("Bearer "):
-        logger.debug("No Bearer token found in Authorization header")
-        return None
-    return header.split(" ", 1)[1].strip() or None
-
-def auth_required(fn):
-    """Decorator to enforce Bearer token auth on endpoints."""
-    from functools import wraps
-
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        token = _get_token_from_header()
-        if not token:
-            logger.warning("Missing or invalid Authorization header")
-            abort(json_error(401, "Missing or invalid Authorization header. Use 'Bearer <token>'."))
-
-        with _TOKENS_LOCK:
-            session = _TOKENS.get(token)
-            if not session:
-                logger.warning("Invalid token provided")
-                abort(json_error(401, "Invalid token."))
-            if session["exp"] < datetime.now(timezone.utc):
-                logger.info("Expired token used, removing from store")
-                _TOKENS.pop(token, None)
-                abort(json_error(401, "Token expired."))
-
-        # annotate request context with current user
-        g.current_user = session["username"]
-        g.current_token = token
-        logger.debug(f"Authenticated request by user={g.current_user}")
-        return fn(*args, **kwargs)
-
-    return wrapper
 
 # ------------------ Utilities ------------------
 
@@ -192,7 +132,6 @@ def api_serve_index():
 
 
 @app.route("/api/health", methods=["GET"])
-@auth_required
 def health():
     """Health check endpoint."""
     logger.info("Health check requested")
@@ -205,7 +144,6 @@ def get_children(tag):
     return children
 
 @app.route("/api/notes/<category>/<anonTag>", methods=["GET"])
-@auth_required
 def api_get_tagged_notes(category, anonTag):
     logger.debug(f"Getting notes for category {category} and tag {anonTag}")
     if category == "Journal":
@@ -229,7 +167,6 @@ def api_get_tagged_notes(category, anonTag):
     return jsonify(notes)
 
 @app.route("/api/notes", methods=["POST"])
-@auth_required
 def api_add_note():
     data = request.get_json()
     if not data or "text" not in data:
@@ -252,7 +189,6 @@ def api_add_note():
     return jsonify({"status": "created", "note": note}), 201
 
 @app.route("/api/notes/<note_id>", methods=["DELETE"])
-@auth_required
 def api_delete_note(note_id):
     note = STORE_NOTES.delete(note_id)
     removed_tags = []
@@ -262,7 +198,6 @@ def api_delete_note(note_id):
     return jsonify({"status": "deleted", "removed_tags": removed_tags})
 
 @app.route("/api/notes/<note_id>", methods=["PATCH"])
-@auth_required
 def api_patch_note(note_id):
     data = request.get_json()
     if not data or "text" not in data:
@@ -299,7 +234,6 @@ def api_patch_note(note_id):
     return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
 
 @app.route("/api/notes/<year>/<month>/count", methods=["GET"])
-@auth_required
 def api_get_note_counts(year, month):
     try:
         year = int(year)
@@ -319,21 +253,18 @@ def api_get_note_counts(year, month):
     return jsonify(date_counts)
 
 @app.route("/api/tags", methods=["GET"])
-@auth_required
 def api_get_tags():
     a = jsonify(STORE_TAGS.find_all())
     logger.info(a)
     return a
 
 @app.route("/api/tasks", methods=["GET"])
-@auth_required
 def api_get_tasks():
     filtered_notes = STORE_NOTES.find_any('task', ['low', 'mid', 'high'])
     logger.info(f"api_get_tasks: Filtering notes for tasks, found {len(filtered_notes)} notes")
     return jsonify(filtered_notes)
 
 @app.route("/api/tags/<category>/<anonTag>", methods=["PATCH"])
-@auth_required
 def api_patch_tag_tree(category, anonTag):
     logger.debug(f"api_patch_tag_tree: Patching tag {anonTag}")
     tag = CATEGORIES[category] + anonTag
@@ -363,57 +294,6 @@ def api_patch_tag_tree(category, anonTag):
             STORE_TAGS.patch(t['name'], {'parent': data['rename']})
         ret['name'] = data['rename']
     return jsonify(ret)
-
-@app.get("/api/auth/status")
-def auth_status():
-    return jsonify({"initialized": bool(STORE_USERS.find_all())})
-
-@app.post("/api/auth/setup")
-def setup_first_user():
-    body = require_json()
-    username = (body.get("username") or "").strip()
-    password = body.get("password") or ""
-    if not username or len(password) < 8:
-        abort(json_error(400, "Choose a username and a password with at least 8 characters."))
-
-    with _SETUP_LOCK:
-        if STORE_USERS.find_all():
-            abort(json_error(409, "The local account is already configured."))
-        STORE_USERS.add({
-            "username": username,
-            "password_hash": generate_password_hash(password),
-        })
-    return jsonify({"status": "created"}), 201
-
-@app.post("/api/auth/signin")
-def signin():
-    """Authenticate user and return token."""
-    logger.info("Signin attempt")
-    body = require_json()
-    username = body.get("username")
-    password = body.get("password")
-    if not username or not password:
-        logger.warning("Signin failed: missing username or password")
-        abort(json_error(400, "Provide 'username' and 'password'."))
-
-    user = STORE_USERS.find_by_id(username)
-    if not user or not check_password_hash(user["password_hash"], password):
-        logger.warning(f"Signin failed for user={username}")
-        abort(json_error(401, "Invalid credentials."))
-
-    token, exp = create_token(username)
-    logger.info(f"User {username} signed in successfully")
-    return jsonify({"token": token, "expires_at": exp.astimezone(timezone.utc).isoformat()}), 201
-
-@app.post("/api/auth/signout")
-@auth_required
-def signout():
-    """Invalidate the current token."""
-    logger.info(f"User {g.current_user} signing out")
-    with _TOKENS_LOCK:
-        _TOKENS.pop(getattr(g, "current_token", ""), None)
-    return jsonify({"status": "signed_out"}), 200
-
 
 # ---------------------------
 # Dev entrypoint
