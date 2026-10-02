@@ -63,7 +63,7 @@ class SQLiteApiTests(unittest.TestCase):
             "image": (BytesIO(image_bytes), "clipboard.png", "image/png"),
         })
         self.assertEqual(uploaded.status_code, 201)
-        self.assertRegex(uploaded.json["id"], r"^[0-9a-f-]{36}$")
+        self.assertRegex(uploaded.json["id"], r"^[0-9a-f]{12}$")
         self.assertEqual(uploaded.json["markdown"], f"![Immagine]({uploaded.json['url']})")
         image_path = DATABASE_PATH.parent / "img" / f"{uploaded.json['id']}.png"
         self.assertTrue(image_path.is_file())
@@ -76,6 +76,16 @@ class SQLiteApiTests(unittest.TestCase):
         finally:
             retrieved.close()
 
+        legacy_id = "00000000-0000-4000-8000-000000000001"
+        legacy_path = image_path.parent / f"{legacy_id}.png"
+        legacy_path.write_bytes(image_bytes)
+        legacy = self.client.get(f"/api/images/{legacy_id}")
+        try:
+            self.assertEqual(legacy.status_code, 200)
+            self.assertEqual(legacy.data, image_bytes)
+        finally:
+            legacy.close()
+
         invalid = self.client.post("/api/images", data={
             "image": (BytesIO(b"not an image"), "clipboard.png", "image/png"),
         })
@@ -85,6 +95,19 @@ class SQLiteApiTests(unittest.TestCase):
         })
         self.assertEqual(unsupported.status_code, 415)
         self.assertEqual(self.client.get("/api/images/not-a-uuid").status_code, 404)
+
+    def test_markdown_image_marker_is_not_task_priority(self):
+        image_markdown = "![Immagine](/api/images/00000000-0000-0000-0000-000000000000)"
+        created = self.client.post("/api/notes", json={"text": image_markdown})
+
+        self.assertEqual(created.status_code, 201)
+        self.assertIsNone(created.json["note"]["task"])
+        self.assertEqual(created.json["note"]["text"], image_markdown)
+
+        task = self.client.post("/api/notes", json={"text": "! standard task"})
+        self.assertEqual(task.status_code, 201)
+        self.assertEqual(task.json["note"]["task"], "low")
+        self.assertEqual(task.json["note"]["text"], "standard task")
 
 
 if __name__ == "__main__":

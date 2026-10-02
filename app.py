@@ -30,6 +30,7 @@ DATABASE_PATH = DATA_DIR / "journote.sqlite3"
 app = Flask(__name__, static_folder=str(RESOURCE_DIR / "static"), static_url_path="")
 CORS(app)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
+SHORT_IMAGE_ID_LENGTH = 12
 app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_SIZE_BYTES + 64 * 1024
 
 IMAGE_FORMATS = {
@@ -85,7 +86,7 @@ def extract_task_priority(text):
     duedate = None
 
     # Regex: match '!!!', '!!', or '!' at start or after a space
-    match = re.search(r'(^|\s)(!{1,3})(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', text)
+    match = re.search(r'(^|\s)(!{1,3})(?!\[)(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', text)
     if match:
         excl = match.group(2)
         if excl == "!!!":
@@ -110,7 +111,7 @@ def extract_task_priority(text):
             elif len(match_duedate) == 10:
                 duedate = datetime.strptime(match_duedate, '%Y-%m-%d').isoformat()[:10]
 
-        cleaned = re.sub(r'(^|\s)(!{1,3})(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', lambda m: m.group(1), text, count=1)
+        cleaned = re.sub(r'(^|\s)(!{1,3})(?!\[)(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', lambda m: m.group(1), text, count=1)
         # cleaned += ' ' + match.group(0).strip()
     cleaned = cleaned.strip()
 
@@ -186,9 +187,12 @@ def api_upload_image():
     if not image_format[1](contents):
         return jsonify({"error": {"status": 400, "message": "The uploaded file is not a valid image."}}), 400
 
-    image_id = str(uuid.uuid4())
     image_dir = DATA_DIR / "img"
     image_dir.mkdir(parents=True, exist_ok=True)
+    while True:
+        image_id = uuid.uuid4().hex[-SHORT_IMAGE_ID_LENGTH:]
+        if not any((image_dir / f"{image_id}{extension}").exists() for extension, _ in IMAGE_FORMATS.values()):
+            break
     (image_dir / f"{image_id}{image_format[0]}").write_bytes(contents)
     image_url = f"/api/images/{image_id}"
     return jsonify({
@@ -199,10 +203,14 @@ def api_upload_image():
 
 @app.get("/api/images/<image_id>")
 def api_get_image(image_id):
-    try:
-        if str(uuid.UUID(image_id)) != image_id:
-            raise ValueError
-    except ValueError:
+    is_short_id = re.fullmatch(r"[0-9a-f]{12}", image_id) is not None
+    is_legacy_uuid = False
+    if not is_short_id:
+        try:
+            is_legacy_uuid = str(uuid.UUID(image_id)) == image_id
+        except ValueError:
+            pass
+    if not is_short_id and not is_legacy_uuid:
         abort(404)
 
     image_dir = DATA_DIR / "img"

@@ -921,6 +921,87 @@ select:focus-visible,
   border-bottom: 1px solid var(--border);
 }
 
+#JournalBox .mini-calendar-header {
+  min-height: 34px;
+  padding: 0 0 6px;
+  border-bottom: 0;
+  font-size: 0.78rem;
+}
+
+#JournalBox .mini-calendar-header .calendar-nav-btn {
+  width: 28px;
+  height: 27px;
+  border: 0;
+  background: transparent;
+  font-size: 1.1rem;
+}
+
+#JournalBox .mini-calendar-header .calendar-nav-btn:hover {
+  background: var(--accent-soft);
+}
+
+#JournalBox .mini-calendar {
+  table-layout: fixed;
+  border-spacing: 3px 4px;
+}
+
+#JournalBox .mini-calendar th {
+  padding: 2px 0 4px;
+  font-size: 0.58rem;
+  letter-spacing: 0;
+}
+
+#JournalBox .mini-calendar td {
+  position: relative;
+  height: 32px;
+  min-height: 32px;
+  padding: 3px 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-family: var(--font-code);
+  font-size: 0.69rem;
+  line-height: 1;
+  vertical-align: middle;
+  box-shadow: none;
+}
+
+#JournalBox .mini-calendar td.calendar-cell {
+  background: #fff;
+}
+
+#JournalBox .mini-calendar td.calendar-weekend {
+  background: #f5f7f5 !important;
+}
+
+#JournalBox .mini-calendar td.calendar-cell:hover {
+  background: var(--accent-soft);
+}
+
+#JournalBox .mini-calendar .calendar-cell-empty {
+  background: transparent !important;
+}
+
+.mini-calendar-day-number {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  margin: 0;
+  font-weight: 600;
+}
+
+#JournalBox .mini-calendar .journal-task-dot {
+  position: absolute;
+  right: 50%;
+  bottom: 2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--signal);
+  box-shadow: none;
+  transform: translateX(50%);
+}
+
 #TagsBoxSubHeader {
   justify-content: flex-start;
   margin: 0 0 8px;
@@ -999,13 +1080,32 @@ select:focus-visible,
 #TagsBox .color-border-orange-5 { border-color: #e1cb94; }
 
 #TagsBox .tagList-task {
-  margin: 4px 0 4px 12px;
-  padding: 4px 7px;
+  max-width: 100%;
+  margin: 2px 0 2px 8px;
+  padding: 2px 5px;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--gold-soft);
+  border-radius: 3px;
+  background: #faf7eb;
   color: #755614;
-  font-size: 0.82rem;
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+#TagsBox .tagList-task > div {
+  display: block !important;
+  min-height: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.tag-task-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: inherit;
+  line-height: inherit;
 }
 
 #Main {
@@ -1207,6 +1307,23 @@ select:focus-visible,
   line-height: 1.45;
 }
 
+.noteText img {
+  display: block;
+  width: auto;
+  max-width: 100%;
+  height: auto;
+  max-height: 60vh;
+  margin: 8px 0;
+  border-radius: 5px;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+
+.noteText img:focus-visible {
+  outline: 3px solid #86ad96;
+  outline-offset: 3px;
+}
+
 .lbl {
   margin: 0 2px 0 0;
   padding: 2px 5px;
@@ -1405,6 +1522,51 @@ select:focus-visible,
   backdrop-filter: blur(3px);
 }
 
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 2012;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(13, 22, 17, 0.94);
+  cursor: zoom-out;
+  animation: dialog-arrive 140ms ease-out both;
+}
+
+.image-lightbox-image {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.42);
+  cursor: default;
+}
+
+.image-lightbox-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: white;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.image-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
 .modal-content {
   width: min(680px, calc(100vw - 32px));
   min-width: 0;
@@ -1600,6 +1762,12 @@ select:focus-visible,
 
   .calendar-table {
     min-width: 560px;
+  }
+
+  #JournalBox .mini-calendar {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
 }
 

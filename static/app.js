@@ -893,6 +893,21 @@ const view = {
       const converter = new showdown.Converter({metadata: true, sanitize: true});
       elNoteText.innerHTML = converter.makeHtml(noteText);
         sanitizeRenderedMarkdown(elNoteText);
+      elNoteText.querySelectorAll('img').forEach(image => {
+        image.loading = 'lazy';
+        image.decoding = 'async';
+        image.tabIndex = 0;
+        image.setAttribute('role', 'button');
+        image.setAttribute('aria-label', `Apri immagine a schermo intero: ${image.alt || 'immagine'}`);
+        const openImage = () => modal.imageViewer.open(image.currentSrc || image.src, image.alt);
+        image.addEventListener('click', openImage);
+        image.addEventListener('keydown', ev => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            openImage();
+          }
+        });
+      });
 
       if (labels.length) {
         const labelByToken = new Map(labels.map(label => [label.token, label.tag]));
@@ -1144,6 +1159,8 @@ const view = {
       // Nome del tag e funzionalità di click
       const span = document.createElement('span');
       span.textContent = task.text.replace(task.firstTag, '●');
+      span.className = 'tag-task-text';
+      span.title = task.text;
       span.style.flex = '1';
       header.appendChild(span);
       li.appendChild(header);
@@ -1272,7 +1289,7 @@ const view = {
 
       // Header with month navigation
       const elJournalHeader = document.createElement('div');
-      elJournalHeader.className = 'calendar-header';
+      elJournalHeader.className = 'calendar-header mini-calendar-header';
 
       const elJournalPrevBtn = document.createElement('button');
       elJournalPrevBtn.className = 'calendar-nav-btn';
@@ -1312,7 +1329,7 @@ const view = {
 
       // Calendar grid
       const elJournalTable = document.createElement('table');
-      elJournalTable.className = 'calendar-table';
+      elJournalTable.className = 'calendar-table mini-calendar';
 
       // Weekday headers
       const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -1362,8 +1379,7 @@ const view = {
 
         // Day number element
         const dayNumEl = document.createElement('div');
-        dayNumEl.style.fontWeight = '600';
-        dayNumEl.style.marginBottom = '6px';
+        dayNumEl.className = 'mini-calendar-day-number';
         dayNumEl.textContent = d;
         elJournalTdBody.appendChild(dayNumEl);
 
@@ -1389,14 +1405,6 @@ const view = {
           const dot = document.createElement('div');
           dot.className = 'journal-task-dot';
           dot.title = `${tasksForDay.length} task(s)`;
-          dot.style.position = 'absolute';
-          dot.style.top = '6px';
-          dot.style.right = '6px';
-          dot.style.width = '8px';
-          dot.style.height = '8px';
-          dot.style.borderRadius = '50%';
-          dot.style.background = '#e53935';
-          dot.style.boxShadow = '0 0 0 2px rgba(229,57,53,0.12)';
           elJournalTdBody.appendChild(dot);
         }
 
@@ -1603,6 +1611,49 @@ const view = {
 
 // MODAL
 const modal = {
+  imageViewer: {
+    el: null,
+    onKeydown: null,
+    open(src, alt = '') {
+      this.close();
+      this.el = document.createElement('div');
+      this.el.className = 'image-lightbox';
+      this.el.setAttribute('role', 'dialog');
+      this.el.setAttribute('aria-modal', 'true');
+      this.el.setAttribute('aria-label', 'Immagine a schermo intero');
+
+      const closeButton = document.createElement('button');
+      closeButton.type = 'button';
+      closeButton.className = 'image-lightbox-close';
+      closeButton.setAttribute('aria-label', 'Chiudi immagine');
+      closeButton.title = 'Chiudi';
+      closeButton.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+      closeButton.addEventListener('click', () => this.close());
+
+      const image = document.createElement('img');
+      image.className = 'image-lightbox-image';
+      image.src = src;
+      image.alt = alt;
+
+      this.el.append(closeButton, image);
+      this.el.addEventListener('click', ev => {
+        if (ev.target === this.el) this.close();
+      });
+      this.onKeydown = ev => {
+        if (ev.key === 'Escape') this.close();
+      };
+      document.addEventListener('keydown', this.onKeydown);
+      document.body.appendChild(this.el);
+      closeButton.focus();
+    },
+    close() {
+      if (!this.el) return;
+      this.el.remove();
+      this.el = null;
+      if (this.onKeydown) document.removeEventListener('keydown', this.onKeydown);
+      this.onKeydown = null;
+    }
+  },
   filterModal: {
     el: null,
     tokens: [],
