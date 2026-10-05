@@ -171,10 +171,26 @@ const model = {
   // added 'Calendar' as subscriber so calendar view refreshes when tasks reload
   tasks: { _v: null, subs: ['TagsBoxList','Calendar'], async reload() {
     this._v = await api.api("/api/tasks");
-    this._v.forEach( t => t.firstTag = t.tags[0] || null)
+    const tags = model.get('tags');
+    this._v.forEach( t => {
+      t.firstTag = null
+      for (const tag of t.tags) {
+        const compareTag = tags.find(v => v.name === tag);
+        if (["Projects", "Generic", "Events"].includes(compareTag.category) && compareTag.parent == null) {
+          t.firstTag = tag;
+        }
+        if (["Projects", "Generic", "Events"].includes(compareTag.category) && compareTag.parent != null) {
+          t.firstTag = tag;
+        }
+      }
+      return t;
+    })
   } },
-  tagsBox_eye: { _v: false, subs: ['TagsBoxList'] },
+  tagsBox_projects: { _v: false, subs: ['TagsBoxList'] },
   tagsBox_task: { _v: true, subs: ['TagsBoxList'] },
+  tagsBox_events: { _v: false, subs: ['TagsBoxList'] },
+  tagsBox_persons: { _v: true, subs: ['TagsBoxList'] },
+  tagsBox_generic: { _v: false, subs: ['TagsBoxList'] },
   tagsVisible: { _v: [], subs: [] },
   tagsActive: { _v: [], subs: [] },
   leftBarVisible: { _v: true, subs: ['LeftBar'] }
@@ -240,25 +256,24 @@ const businessLogic = {
   },
   
   // Handle tag tree operations
-  buildTagTree(flatTags, tasks) {
+  buildTagTree(tags, tasks) {
     const tree = [];
     const childrenOf = {};
-    flatTags.forEach(tag => {
+    tags.forEach(tag => {
       childrenOf[tag.name] = { ...tag, tasks: [], children: [] };
-      if (!tag.parent || tag.parent === '') {
+    });
+    tags.forEach(tag => {
+      if (!tag.parent || tag.parent === '')
         tree.push(childrenOf[tag.name]);
-      }
-      tasks.forEach(task => {
-        if (task.firstTag == tag.name) {
-          childrenOf[tag.name].tasks.push(task);
-        }
-      })
-    });
-    flatTags.forEach(tag => {
-      if (tag.parent && childrenOf[tag.parent]) {
+      if (tag.parent && childrenOf[tag.parent])
         childrenOf[tag.parent].children.push(childrenOf[tag.name]);
-      }
     });
+    tasks.forEach(task => {
+      if (task.firstTag != null && task.firstTag != '') {
+        console.log(task)
+        childrenOf[task.firstTag].tasks.push(task);
+      }
+    })
     return tree;
   },
   
@@ -428,6 +443,19 @@ const page = {
 
       view.TopBar.addTab(tag, matched);
       view.Main.addTab(tag, matched);
+    },
+    async focusTask(task) {
+      const panelTag = task.firstTag || task.tags?.find(tag => tag.startsWith('#')) || task.date;
+      if (!panelTag) return;
+
+      await this.addTagview(panelTag);
+      this.activateTagview(panelTag);
+
+      const column = Array.from(document.querySelectorAll('.column'))
+        .find(item => item.dataset.key === panelTag);
+      const note = Array.from(column?.querySelectorAll('.noteItem') || [])
+        .find(item => item.dataset.id === String(task.id));
+      note?.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'nearest'});
     },
     async addFilterview(rule, notes = null, key = null) {
       if (!eid('Main')) {
@@ -1277,28 +1305,87 @@ const view = {
       console.log('[fn] TagsBoxSubHeader.render()');
       this.el = eid('TagsBoxSubHeader');
       this.el.innerHTML = '';
-      
-      const elTagsEye = document.createElement('button');
-      elTagsEye.id = 'tagsEye';
-      elTagsEye.className="btnp primary";
-      elTagsEye.innerHTML = '<i class="fa fa-fw fa-eye"></i>';
-      elTagsEye.onclick = (ev) => {
-        ev.preventDefault();
-        elTagsEye.classList.toggle('active');
-        model.set('tagsBox_eye', !model.get('tagsBox_eye'));
-      };
-      this.el.appendChild(elTagsEye);
 
       const elTagsTasks = document.createElement('button');
-      elTagsTasks.id = 'tagsEye';
-      elTagsTasks.className=`btnp primary ${model.get('tagsBox_task') ? ' active' : ''}`;
-      elTagsTasks.innerHTML = '<i class="fa fa-fw fa-exclamation fa-solid"></i>';
-      elTagsTasks.onclick = (ev) => {
+      elTagsTasks.type = 'button';
+      elTagsTasks.id = 'tagsEventsToggle';
+      elTagsTasks.className = `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
+      elTagsTasks.textContent = '!';
+      elTagsTasks.title = 'Mostra/nascondi tag evento';
+      elTagsTasks.setAttribute('aria-label', elTagsTasks.title);
+      elTagsTasks.setAttribute('aria-pressed', String(model.get('tagsBox_events')));
+      elTagsTasks.onclick = ev => {
         ev.preventDefault();
         elTagsTasks.classList.toggle('active');
         model.set('tagsBox_task', !model.get('tagsBox_task'));
       };
       this.el.appendChild(elTagsTasks);
+
+      const elTagsToggleProjects = document.createElement('button');
+      elTagsToggleProjects.type = 'button';
+      elTagsToggleProjects.id = 'tagsEventsToggle';
+      elTagsToggleProjects.className = `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
+      elTagsToggleProjects.textContent = '#';
+      elTagsToggleProjects.title = 'Mostra/nascondi tag evento';
+      elTagsToggleProjects.setAttribute('aria-label', elTagsToggleProjects.title);
+      elTagsToggleProjects.setAttribute('aria-pressed', String(model.get('tagsBox_events')));
+      elTagsToggleProjects.onclick = ev => {
+        ev.preventDefault();
+        elTagsToggleProjects.classList.toggle('active');
+        model.set('tagsBox_projects', !model.get('tagsBox_projects'));
+      };
+      this.el.appendChild(elTagsToggleProjects);
+
+      const elTagsToggleEvents = document.createElement('button');
+      elTagsToggleEvents.type = 'button';
+      elTagsToggleEvents.id = 'tagsEventsToggle';
+      elTagsToggleEvents.className = `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
+      elTagsToggleEvents.textContent = '>';
+      elTagsToggleEvents.title = 'Mostra/nascondi tag evento';
+      elTagsToggleEvents.setAttribute('aria-label', elTagsToggleEvents.title);
+      elTagsToggleEvents.setAttribute('aria-pressed', String(model.get('tagsBox_events')));
+      elTagsToggleEvents.onclick = ev => {
+        ev.preventDefault();
+        const enabled = !model.get('tagsBox_events');
+        elTagsToggleEvents.classList.toggle('active', enabled);
+        elTagsToggleEvents.setAttribute('aria-pressed', String(enabled));
+        model.set('tagsBox_events', enabled);
+      };
+      this.el.appendChild(elTagsToggleEvents);
+
+      const elTagsTogglePersons = document.createElement('button');
+      elTagsTogglePersons.type = 'button';
+      elTagsTogglePersons.id = 'tagsPersonsToggle';
+      elTagsTogglePersons.className = `btnp primary${model.get('tagsBox_persons') ? ' active' : ''}`;
+      elTagsTogglePersons.textContent = '@';
+      elTagsTogglePersons.title = 'Mostra/nascondi tag persone';
+      elTagsTogglePersons.setAttribute('aria-label', elTagsTogglePersons.title);
+      elTagsTogglePersons.setAttribute('aria-pressed', String(model.get('tagsBox_persons')));
+      elTagsTogglePersons.onclick = ev => {
+        ev.preventDefault();
+        const enabled = !model.get('tagsBox_persons');
+        elTagsTogglePersons.classList.toggle('active', enabled);
+        elTagsTogglePersons.setAttribute('aria-pressed', String(enabled));
+        model.set('tagsBox_persons', enabled);
+      };
+      this.el.appendChild(elTagsTogglePersons);
+
+      const elTagsToggleGeneric = document.createElement('button');
+      elTagsToggleGeneric.type = 'button';
+      elTagsToggleGeneric.id = 'tagsGenericToggle';
+      elTagsToggleGeneric.className = `btnp primary${model.get('tagsBox_generic') ? ' active' : ''}`;
+      elTagsToggleGeneric.textContent = '+';
+      elTagsToggleGeneric.title = 'Mostra/nascondi tag generici';
+      elTagsToggleGeneric.setAttribute('aria-label', elTagsToggleGeneric.title);
+      elTagsToggleGeneric.setAttribute('aria-pressed', String(model.get('tagsBox_generic')));
+      elTagsToggleGeneric.onclick = ev => {
+        ev.preventDefault();
+        const enabled = !model.get('tagsBox_generic');
+        elTagsToggleGeneric.classList.toggle('active', enabled);
+        elTagsToggleGeneric.setAttribute('aria-pressed', String(enabled));
+        model.set('tagsBox_generic', enabled);
+      };
+      this.el.appendChild(elTagsToggleGeneric);
       return this.el;
     }
   },
@@ -1308,14 +1395,32 @@ const view = {
       this.el = eid('TagsBoxList');
       this.el.innerHTML = '';
 
+      const tagCategories = ['Projects', 'Events', 'Generic', 'Persons'];
+      // const tagPersons = ['Persons'];
       const sectionsDiv = {
-        'Tags': { el: document.createElement('div'), filter: ['Projects', 'Events', 'Generic']},
-        'Persons': { el: document.createElement('div'), filter: ['Persons']}
+        'Tags': { el: document.createElement('div'), filter: tagCategories}
+        // 'Persons': { el: document.createElement('div'), filter: tagPersons }
       };
-      const modelTagsBoxEye = model.get('tagsBox_eye');
       const modelTagsBoxTask = model.get('tagsBox_task');
       const tags = model.get('tags');
       const tasks = model.get('tasks');
+
+      const untaggedTasks = tasks.filter(task => !task.firstTag);
+      if (untaggedTasks.length) {
+        const section = document.createElement('div');
+        section.className = 'tagSection';
+        const title = document.createElement('div');
+        title.className = 'sectionTitle';
+        title.textContent = 'Senza tag: ';
+        section.appendChild(title);
+        const taskList = document.createElement('ul');
+        taskList.className = 'tagList-tree';
+        untaggedTasks.forEach(task => {
+          taskList.appendChild(this.createTaskElement(task, modelTagsBoxTask));
+        });
+        section.appendChild(taskList);
+        this.el.appendChild(section);
+      }
 
       Object.entries(sectionsDiv).forEach(([secName, {el, filter}]) => {
         el.className = 'tagSection';
@@ -1323,32 +1428,16 @@ const view = {
         title.className = 'sectionTitle';
         title.textContent = secName + ': ';
         el.appendChild(title);
-        let tagTree = businessLogic.buildTagTree(tags.filter( tag => filter.includes(tag.category)), tasks);
-        el.appendChild(this.createTreeWrap(tagTree, modelTagsBoxEye, modelTagsBoxTask, 1));
+        let tagTree = businessLogic.buildTagTree(tags.filter(t => filter.includes(t.category)), tasks);
+        el.appendChild(this.createTreeWrap(tagTree, {
+          'Projects': model.get('tagsBox_projects'),
+          'Events': model.get('tagsBox_events'),
+          'Generic': model.get('tagsBox_generic'),
+          'Persons': model.get('tagsBox_persons')
+        }, modelTagsBoxTask, 1));
         this.el.appendChild(el);
       });
       return this.el;
-    },
-    buildTagTree(flatTags, tasks) {
-      const tree = [];
-      const childrenOf = {};
-      flatTags.forEach(tag => {
-        childrenOf[tag.name] = { ...tag, tasks: [], children: [] };
-        if (!tag.parent || tag.parent === '') {
-          tree.push(childrenOf[tag.name]);
-        }
-        tasks.forEach(task => {
-          if (task.firstTag == tag.name) {
-            childrenOf[tag.name].tasks.push(task);
-          }
-        })
-      });
-      flatTags.forEach(tag => {
-        if (tag.parent && childrenOf[tag.parent]) {
-          childrenOf[tag.parent].children.push(childrenOf[tag.name]);
-        }
-      });
-      return tree;
     },
     createTaskElement(task, tagsTaskActive) {
       const li = document.createElement('li');
@@ -1364,10 +1453,25 @@ const view = {
 
       // Nome del tag e funzionalità di click
       const span = document.createElement('span');
-      span.textContent = task.text.replace(task.firstTag, '●');
+      const hasTag = Boolean(task.firstTag);
+      const hasPanel = hasTag || Boolean(task.date);
+      span.textContent = hasTag ? task.text.replace(task.firstTag, '●') : task.text;
       span.className = 'tag-task-text';
       span.title = task.text;
       span.style.flex = '1';
+      if (hasPanel) {
+        span.setAttribute('role', 'button');
+        span.tabIndex = 0;
+        span.setAttribute('aria-label', `Apri la nota del task: ${task.text}`);
+        span.style.cursor = 'pointer';
+        span.onclick = () => page.home.focusTask(task);
+        span.onkeydown = ev => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            page.home.focusTask(task);
+          }
+        };
+      }
       header.appendChild(span);
       li.appendChild(header);
       return li;
@@ -1380,15 +1484,16 @@ const view = {
       });
       return ul;
     },
-    noDiscendentTask(tag) {
+    hasDiscendentTask(tag) {
       if (tag.tasks.length != 0)
         return true;
-      return tag.children.some(child => this.noDiscendentTask(child));
+      return tag.children.some(child => this.hasDiscendentTask(child));
     },
     createTreeElement(tag, tagsEyeActive, tagsTaskActive, depth) {
       const li = document.createElement('li');
-      li.style.listStyle = 'none'; // Rimuove il proiettile dell'elemento di lista
-      if(!tagsEyeActive && !tag.treed && !this.noDiscendentTask(tag)) {
+      li.style.listStyle = 'none';
+      if(tagsEyeActive[tag.category] || tag.treed || this.hasDiscendentTask(tag)) {
+      } else {
         li.style.display = "none";
       }
       li.className=`expanded tree-depth-${depth}`;
@@ -1483,26 +1588,6 @@ const view = {
         modal.editTagPropertiesModal.render(tag.name);
       };
       header.appendChild(propsBtn);
-
-      // Show properties indicator if tag has properties
-      const propsIndicator = document.createElement('span');
-      propsIndicator.className = 'tag-properties-indicator';
-      propsIndicator.style.color = '#666';
-      propsIndicator.style.marginLeft = '4px';
-      propsIndicator.style.cursor = 'pointer';
-      propsIndicator.title = 'Tag has properties';
-      propsIndicator.textContent = '•';
-      // Only show indicator if tag has properties
-      if (tag.property_count && tag.property_count > 0) {
-        propsIndicator.style.display = 'inline';
-      } else {
-        propsIndicator.style.display = 'none';
-      }
-      propsIndicator.onclick = ev => {
-        ev.stopPropagation();
-        modal.editTagPropertiesModal.render(tag.name);
-      };
-      header.appendChild(propsIndicator);
 
       li.appendChild(header);
       tag.tasks.forEach(task => {
@@ -2385,7 +2470,7 @@ const modal = {
             return tags;
           })
 
-          if (updated.parent) businessLogic.completeActionRequiredTag(tagObj.name);
+          businessLogic.completeActionRequiredTag(tagObj.name);
           await view.ActionRequiredBox.render();
 
           this.el.remove();

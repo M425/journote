@@ -60,9 +60,6 @@ body {
 }
 
 /* Tags list */
-.tagSection {
-  margin-bottom:10px;
-}
 .tagSection .sectionTitle {
   font-weight:700;
   margin-bottom:1px;
@@ -1116,11 +1113,11 @@ select:focus-visible,
 }
 
 .tagSection {
-  margin-bottom: 14px;
+  margin-bottom: 3px;
 }
 
 .tagSection .sectionTitle {
-  margin-bottom: 6px;
+  margin-bottom: 0px;
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 700;
@@ -1129,6 +1126,7 @@ select:focus-visible,
 
 .tagList-tree {
   padding-left: 10px;
+  margin: 4px 0px;
 }
 
 .tagList-tree li {
@@ -1150,11 +1148,10 @@ select:focus-visible,
   min-height: 32px;
   border-width: 1px !important;
   border-radius: 5px !important;
-  background: var(--paper) !important;
 }
 
 #TagsBox .tagList-tree li > div:hover {
-  background: var(--accent-soft) !important;
+  /*background: var(--accent-soft) !important;*/
 }
 
 #TagsBox .color-green-5 { color: #286b56; }
@@ -1172,11 +1169,23 @@ select:focus-visible,
   padding: 2px 5px;
   border: 1px solid var(--border);
   border-radius: 3px;
-  background: #faf7eb;
   color: #755614;
   font-size: 0.72rem;
   line-height: 1.25;
 }
+#TagsBox .tagList-task.task-low {
+  background: #f2f8f4;
+  border-color: #568f78;
+}
+#TagsBox .tagList-task.task-mid {
+  background: #fffaf0;
+  border-color: #d4c2a0;
+}
+#TagsBox .tagList-task.task-high {
+  background: #fff5f1;
+  border-color: #c25a4a;
+}
+
 
 #TagsBox .tagList-task > div {
   display: block !important;
