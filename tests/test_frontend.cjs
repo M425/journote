@@ -1,0 +1,51 @@
+// DOM integration tests, using linkedom. Run: npm install linkedom; node test_frontend.cjs
+const {parseHTML} = require('linkedom');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+(async () => {
+  const {window} = parseHTML('<html><body><div id="app"></div></body></html>');
+  const context = vm.createContext({window, document:window.document, console, Date, Set, FormData});
+  const script = fs.readFileSync(__dirname + '/main.js','utf8').split('// RUN')[0];
+  vm.runInContext(script + '\nthis.testApp = {model,businessLogic,page,view,modal,api};', context);
+  const {model,businessLogic,page,view,modal,api} = context.testApp;
+  let properties = [{key:'url',value:'https://a:b\n\nparagraph'}];
+  const calls=[];
+  api.api = async (url,opts={}) => {
+    calls.push({url,...opts});
+    if (opts.method==='PATCH') return {kind:'tag_property',tag:'#demo',note:null};
+    if (opts.method==='PUT') {properties=opts.body.properties;return {success:true};}
+    if (url==='/api/notes') return {note:{id:'note-1'}};
+    return {properties};
+  };
+  model.tags._v=[{name:'#demo',category:'Projects'}];
+  page.home.refreshMetadata=async()=>{};
+  view.ActionRequiredBox.render=async()=>{};
+  businessLogic.addActionRequiredTags=()=>{};
+  let pushes=0;
+  view.Main.pushNote=()=>pushes++;
+  Object.assign(view.EditorWrap,{ed:{value:'#demo[stato] pronto!',focus(){}},status:{dataset:{}},resizeEditor(){}});
+  await view.EditorWrap.saveNote();
+  assert.equal(pushes,0);
+  assert.equal(view.EditorWrap.ed.value,'');
+  assert.equal(calls[0].method,'PATCH');
+  assert.equal(calls[0].body.properties[0].value,'pronto!');
+  view.EditorWrap.ed.value='Una nota';
+  await view.EditorWrap.saveNote();
+  assert.equal(pushes,1);
+  await modal.editTagPropertiesModal.render('#demo');
+  assert.equal(modal.editTagPropertiesModal.el.querySelector('[data-value]').value,'https://a:b\n\nparagraph');
+  modal.editTagPropertiesModal.el.querySelector('[data-value]').value='changed\n\nparagraph';
+  await modal.editTagPropertiesModal.el.querySelector('form').onsubmit({preventDefault(){}});
+  assert.equal(modal.editTagPropertiesModal.el,null);
+  await modal.editTagPropertiesModal.render('#demo');
+  assert.equal(modal.editTagPropertiesModal.el.querySelector('[data-value]').value,'changed\n\nparagraph');
+  api.api=async()=>{throw new Error('network');};
+  view.EditorWrap.ed.value='#demo[stato] preserve me';
+  await view.EditorWrap.saveNote();
+  assert.equal(view.EditorWrap.ed.value,'#demo[stato] preserve me');
+  await modal.editTagPropertiesModal.render('#demo');
+  assert.equal(modal.editTagPropertiesModal.el.querySelector('form').style.display,'none');
+  assert.match(modal.editTagPropertiesModal.el.querySelector('[role=status]').textContent,/network/);
+  console.log('PASS: routing, no phantom notes, normal notes, modal load/save/reopen, failed save preserves input, failed load blocks form.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

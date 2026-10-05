@@ -42,6 +42,9 @@ class SQLiteApiTests(unittest.TestCase):
         filtered = self.client.post("/api/notes/filter", json={"rule": "#work e !@sam"})
         self.assertEqual(filtered.status_code, 200)
         self.assertEqual([note["text"] for note in filtered.json], ["quick note #work"])
+        or_filtered = self.client.post("/api/notes/filter", json={"rule": "#work o @sam"})
+        self.assertEqual(or_filtered.status_code, 200)
+        self.assertEqual(len(or_filtered.json), 2)
         invalid_filter = self.client.post("/api/notes/filter", json={"rule": "#work e"})
         self.assertEqual(invalid_filter.status_code, 400)
         tags = self.client.get("/api/tags")
@@ -56,6 +59,53 @@ class SQLiteApiTests(unittest.TestCase):
         self.assertEqual(deleted.status_code, 200)
         self.assertIn("#delete-me", deleted.json["removed_tags"])
         self.assertTrue(DATABASE_PATH.is_file())
+
+    def test_explorer_lists_tables_and_rejects_write_queries(self):
+        created = self.client.post("/api/notes", json={
+            "text": "explorer note #read-only",
+            "date": "2026-10-03",
+        })
+        self.assertEqual(created.status_code, 201)
+
+        tables = self.client.get("/api/explorer/tables")
+        self.assertEqual(tables.status_code, 200)
+        self.assertEqual(tables.json, ["note_tags", "notes", "tags"])
+
+        selected = self.client.post("/api/explorer/query", json={
+            "query": "SELECT n.id, n.text, t.name FROM notes n "
+                     "JOIN note_tags nt ON nt.note_id = n.id "
+                     "JOIN tags t ON t.name = nt.tag_name",
+        })
+        self.assertEqual(selected.status_code, 200)
+        self.assertEqual(selected.json["columns"], ["id", "text", "name"])
+        self.assertEqual(len(selected.json["rows"]), 1)
+        self.assertEqual(selected.json["rows"][0][1:], ["explorer note #read-only", "#read-only"])
+
+        deleted = self.client.post("/api/explorer/query", json={
+            "query": "DELETE FROM notes",
+        })
+        self.assertEqual(deleted.status_code, 400)
+        self.assertEqual(len(STORE_NOTES.find_all()), 1)
+
+    def test_renaming_tag_updates_note_text_and_relation(self):
+        created = self.client.post("/api/notes", json={
+            "text": "rename this #old-name",
+            "date": "2026-10-03",
+        })
+        note_id = created.json["note"]["id"]
+
+        renamed = self.client.patch("/api/tags/Projects/old-name", json={
+            "treed": "false",
+            "parent": "",
+            "content": "",
+            "rename": "#new-name",
+        })
+        self.assertEqual(renamed.status_code, 200)
+        note = STORE_NOTES.find_by_id(note_id)
+        self.assertIn("#new-name", note["text"])
+        self.assertEqual(note["tags"], ["#new-name"])
+        self.assertEqual(STORE_NOTES.find_in_list("tags", "#old-name"), [])
+        self.assertEqual(STORE_TAGS.find_by_id("#new-name")["treed"], False)
 
     def test_clipboard_image_upload_and_retrieval(self):
         image_bytes = b"\x89PNG\r\n\x1a\nclipboard-image-test"
