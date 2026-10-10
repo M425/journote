@@ -1,13 +1,11 @@
-import json
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
-from store import RelationalSQLiteStore, SQLiteStore
+from store import Store
 
 
-class SQLiteStoreTests(unittest.TestCase):
+class StoreTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp_dir.name) / "data" / "journote.sqlite3"
@@ -15,116 +13,102 @@ class SQLiteStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_crud_and_search_operations(self):
-        store = SQLiteStore("notes", self.database_path, "id")
+    def test_note_crud_and_select(self):
+        store = Store(self.database_path)
         note = {
             "id": "one",
             "timestamp": 1,
             "date": "2026-10-03",
-            "text": "caffè",
+            "text": "caffè #work",
             "tags": ["#work"],
             "task": "low",
             "duedate": None,
+            "reply": None,
+            "replied_to": None,
         }
 
-        store.add(note)
-        self.assertEqual(store.find_by_id("one"), note)
-        self.assertEqual(store.find_eq("task", "low"), [note])
-        self.assertEqual(store.find_in_list("tags", "#work"), [note])
-        self.assertEqual(store.find_any("task", ["low", "high"]), [note])
-        self.assertEqual(store.patch("one", {"text": "updated"})["text"], "updated")
-        self.assertEqual(store.re_id("one", "two")["id"], "two")
-        self.assertEqual(store.delete("two")["id"], "two")
-        self.assertEqual(store.find_all(), [])
+        store.add_note(note)
+        self.assertEqual(store.get_note("one"), note)
+        self.assertEqual(store.select_notes("task = ?", ("low",)), [note])
+        self.assertEqual(store.select_notes(
+            "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+            "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)", ("#work",),
+        ), [note])
+        self.assertEqual(store.select_notes("task IN ('low', 'high')"), [note])
+        self.assertEqual(store.select_notes("date = ?", ("2026-10-03",)), [note])
+        self.assertEqual(store.select_notes(limit=0), [])
+        self.assertEqual(store.patch_note("one", {"text": "updated"})["text"], "updated")
+        self.assertEqual(store.get_note("one")["text"], "updated")
+        self.assertEqual(store.delete_note("one")["id"], "one")
+        self.assertEqual(store.select_notes(), [])
         store.close()
 
-    def test_imports_legacy_json_once(self):
-        legacy_path = Path(self.temp_dir.name) / "notes.json"
-        legacy_records = [{
-            "id": "legacy",
-            "timestamp": 1,
-            "date": "2026-10-03",
-            "text": "legacy #old",
-            "tags": ["#old"],
-            "task": None,
-            "duedate": None,
-        }]
-        legacy_path.write_text(json.dumps(legacy_records), encoding="utf-8")
+    def test_select_notes_orders_and_aggregates_tags(self):
+        store = Store(self.database_path)
+        store.add_note({"id": "a", "timestamp": 1, "date": "2026-10-02", "text": "a", "tags": ["#x", "#y"]})
+        store.add_note({"id": "b", "timestamp": 1, "date": "2026-10-01", "text": "b", "tags": []})
 
-        first = SQLiteStore("notes", self.database_path, "id", legacy_path)
-        self.assertEqual(first.find_all(), legacy_records)
-        first.close()
+        notes = store.select_notes()
+        self.assertEqual([note["id"] for note in notes], ["b", "a"])
+        self.assertEqual(notes[1]["tags"], ["#x", "#y"])
+        self.assertEqual(store.select_notes(
+            "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+            "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)", ("#y",),
+        )[0]["id"], "a")
+        store.close()
 
-        legacy_path.write_text("[]", encoding="utf-8")
-        second = SQLiteStore("notes", self.database_path, "id", legacy_path)
-        self.assertEqual(second.find_all(), legacy_records)
-        second.close()
+    def test_tag_crud_rename_and_properties(self):
+        store = Store(self.database_path)
+        store.add_tag({"name": "#work", "category": "Projects", "treed": False, "parent": None, "content": ""})
+        self.assertEqual(store.get_tag("#work")["category"], "Projects")
+        self.assertEqual(store.select_tags("parent IS NULL")[0]["name"], "#work")
+        self.assertEqual(store.select_tags("parent = ?", ("#missing",)), [])
 
-    def test_relational_store_uses_columns_and_note_tag_relation(self):
-        tags = RelationalSQLiteStore("tags", self.database_path, "name")
-        notes = RelationalSQLiteStore("notes", self.database_path, "id")
-        tags.add({"name": "#work", "category": "Projects", "treed": False, "parent": None, "content": ""})
-        notes.add({
-            "id": "one",
-            "timestamp": 1,
-            "date": "2026-10-03",
-            "text": "note #work",
-            "task": None,
-            "duedate": None,
-            "tags": ["#work"],
-        })
+        store.patch_tag("#work", {"treed": "true", "parent": "#root"})
+        self.assertEqual(store.get_tag("#work")["treed"], True)
+        self.assertEqual(store.get_tag("#work")["parent"], "#root")
 
-        self.assertEqual(notes.find_by_id("one")["tags"], ["#work"])
-        self.assertEqual(notes.find_in_list("tags", "#work")[0]["id"], "one")
-        with sqlite3.connect(self.database_path) as connection:
-            note_columns = {row[1] for row in connection.execute("PRAGMA table_info(notes)")}
-            self.assertTrue({"id", "timestamp", "date", "text", "task", "duedate"}.issubset(note_columns))
-            self.assertNotIn("payload", note_columns)
-            self.assertEqual(
-                connection.execute("SELECT note_id, tag_name FROM note_tags").fetchone(),
-                ("one", "#work"),
-            )
-            indexes = {row[1] for row in connection.execute("PRAGMA index_list(note_tags)")}
-            self.assertIn("idx_note_tags_tag_note", indexes)
-        notes.close()
-        tags.close()
+        renamed = store.rename_tag("#work", "#job")
+        self.assertEqual(renamed["name"], "#job")
+        self.assertIsNone(store.get_tag("#work"))
 
-    def test_migrates_payload_tables_and_creates_tag_relations(self):
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.database_path) as connection:
-            connection.execute("CREATE TABLE store_tags (entity_key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-            connection.execute("CREATE TABLE store_notes (entity_key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-            connection.execute(
-                "INSERT INTO store_tags VALUES (?, ?)",
-                ("#legacy", json.dumps({"name": "#legacy", "category": "Projects", "treed": False, "parent": None, "content": ""})),
-            )
-            connection.execute(
-                "INSERT INTO store_notes VALUES (?, ?)",
-                ("legacy-note", json.dumps({
-                    "id": "legacy-note",
-                    "timestamp": 10,
-                    "date": "2026-10-02",
-                    "text": "legacy #legacy",
-                    "task": None,
-                    "duedate": None,
-                    "tags": ["#legacy"],
-                })),
-            )
+        store.set_tag_property("#job", "url", "https://example.com")
+        self.assertEqual(store.get_tag_properties("#job"), [{"key": "url", "value": "https://example.com"}])
+        store.delete_tag_property("#job", "url")
+        self.assertEqual(store.get_tag_properties("#job"), [])
 
-        tags = RelationalSQLiteStore("tags", self.database_path, "name")
-        notes = RelationalSQLiteStore("notes", self.database_path, "id")
-        self.assertEqual(notes.find_by_id("legacy-note")["tags"], ["#legacy"])
-        with sqlite3.connect(self.database_path) as connection:
-            legacy_tables = connection.execute(
-                "SELECT name FROM sqlite_master WHERE name IN ('store_notes', 'store_tags')"
-            ).fetchall()
-            self.assertEqual(legacy_tables, [])
-            self.assertEqual(
-                connection.execute("SELECT note_id, tag_name FROM note_tags").fetchall(),
-                [("legacy-note", "#legacy")],
-            )
-        notes.close()
-        tags.close()
+        self.assertEqual(store.delete_tag("#job")["name"], "#job")
+        self.assertEqual(store.select_tags(), [])
+        store.close()
+
+    def test_add_note_creates_tags_and_relations(self):
+        store = Store(self.database_path)
+        store.add_note({"id": "one", "timestamp": 1, "date": "2026-10-03", "text": "x", "tags": ["#work", "@sam"]})
+        self.assertEqual({tag["name"] for tag in store.select_tags()}, {"#work", "@sam"})
+        self.assertEqual(store.get_tag("#work")["category"], "Projects")
+        self.assertEqual(store.get_tag("@sam")["category"], "Persons")
+        self.assertEqual(store.get_note("one")["tags"], ["#work", "@sam"])
+
+        store.patch_note("one", {"tags": ["#work"]})
+        self.assertEqual(store.get_note("one")["tags"], ["#work"])
+        self.assertEqual(store.count_notes_by_date("2026-10-01", "2026-10-30"), {"2026-10-03": 1})
+        store.close()
+
+    def test_missing_records_raise_key_error(self):
+        store = Store(self.database_path)
+        with self.assertRaises(KeyError):
+            store.delete_note("missing")
+        with self.assertRaises(KeyError):
+            store.patch_note("missing", {"text": "x"})
+        with self.assertRaises(KeyError):
+            store.delete_tag("#missing")
+        with self.assertRaises(KeyError):
+            store.patch_tag("#missing", {"content": "x"})
+        with self.assertRaises(KeyError):
+            store.rename_tag("#missing", "#other")
+        self.assertIsNone(store.get_note("missing"))
+        self.assertIsNone(store.get_tag("#missing"))
+        store.close()
 
 
 if __name__ == "__main__":

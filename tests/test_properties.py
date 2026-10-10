@@ -1,16 +1,15 @@
-import ast
 import re
 import tempfile
 import unittest
 from pathlib import Path
-from store import SQLiteStore
+from store import Store
 
 
 class PropertyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / 'db.sqlite3'
-        self.store = SQLiteStore('tags', self.path, 'name')
+        self.store = Store(self.path)
 
     def tearDown(self):
         self.store.close()
@@ -20,7 +19,7 @@ class PropertyTests(unittest.TestCase):
         self.store.set_tag_property('#project', 'url', 'https://example.com:8000/a')
         self.store.set_tag_property('#project', 'status', 'old')
         self.store.set_tag_property('#project', 'status', 'new\nparagraph\n\nnext')
-        other = SQLiteStore('tags', self.path, 'name')
+        other = Store(self.path)
         try:
             self.assertEqual(other.get_tag_properties('#project'), [
                 {'key': 'status', 'value': 'new\nparagraph\n\nnext'},
@@ -42,8 +41,10 @@ class PropertyTests(unittest.TestCase):
         self.assertEqual(self.store.get_tag_properties('#project'), [])
 
     def test_parser(self):
-        tree = ast.parse(Path(__file__).with_name('app.py').read_text())
-        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'parse_tag_property_syntax')
+        import ast
+        app_path = Path(__file__).resolve().parent.parent / 'app.py'
+        function = next(n for n in ast.parse(app_path.read_text()).body
+                        if isinstance(n, ast.FunctionDef) and n.name == 'parse_tag_property_syntax')
         namespace = {'re': re}
         exec(compile(ast.Module(body=[function], type_ignores=[]), '<parser>', 'exec'), namespace)
         parse = namespace['parse_tag_property_syntax']

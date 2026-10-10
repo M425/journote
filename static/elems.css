@@ -1,14 +1,48 @@
+/* ==========================================================================
+   elems.css — design tokens (colors, fonts, base sizes) and button styles.
+   All color configuration lives here; layout/component styles are in styles.css.
+   ========================================================================== */
+
 :root {
+  /* Base palette */
   --c-standard: #f3f1f5;
   --c-standard-l: #f3f1f5;
+  --c-standard-d: #474648;
   --c-primary: #1976d2;
   --c-primary-l: #eaf4ff;
+  --c-primary-d: #175492;
   --c-secondary: #31a7ae;
   --c-secondary-l: #e1f2f4;
-  --c-warning: #ebe046;
-  --c-warning-l: #f6f4d6;
+  --c-secondary-d: #17686c;
+  --c-warning: #b7ad20;
+  --c-warning-l: #f9f8e4;
+  --c-warning-d: #534e09;
   --c-error: #d34e4e;
-  --c-error-l: #ffe6e6;
+  --c-error-l: #f6d4d4;
+  --c-error-d: #8b2727;
+  --c-muted: #a7a6a6;
+  --c-muted-l: #f4f8f5;
+  --c-muted-d: #676767;
+
+  /* Journote workspace theme (overrides the base palette) */
+  --accent: #286b56;
+  --accent-strong: #1b5744;
+  --accent-soft: #e1eee7;
+  --signal: #d2644f;
+  --signal-soft: #fff0e9;
+  --gold: #bd8b22;
+  --gold-soft: #f8f0d9;
+  --bg: #edf3ef;
+  --paper: #ffffff;
+  --paper-muted: #f6f9f7;
+  --ink: #25332d;
+  --muted: #68766f;
+  --border: #d8e2dc;
+
+  /* Fonts and base size */
+  --font-body: "IBM Plex Mono", "Cascadia Mono", monospace;
+  --font-code: "IBM Plex Mono", "Cascadia Mono", monospace;
+  font-size: 14px;
 }
 
 button           {
@@ -25,6 +59,14 @@ button.btn.primary   { background: var(--c-primary-l); color: var(--c-primary) }
 button.btn.secondary { background: var(--c-secondary-l); color: var(--c-secondary) }
 button.btn.warning   { background: var(--c-warning-l); color: var(--c-warning) }
 button.btn.error     { background: var(--c-error-l); color: var(--c-error) }
+button.btn.muted     { background: var(--c-muted-l); color: var(--c-muted) }
+
+button.btn.transparent           { background: #ffffff00; color: #888888 }
+button.btn.transparent.primary   { background: #ffffff00; color: var(--c-primary) }
+button.btn.transparent.secondary { background: #ffffff00; color: var(--c-secondary) }
+button.btn.transparent.warning   { background: #ffffff00; color: var(--c-warning) }
+button.btn.transparent.error     { background: #ffffff00; color: var(--c-error) }
+button.btn.transparent.muted     { background: #ffffff00; color: var(--c-muted) }
 
 button.btnp.primary   { background: var(--c-standard); color: var(--c-primary) }
 button.btnp.secondary { background: var(--c-standard); color: var(--c-secondary) }
@@ -36,7 +78,7 @@ button.btnp.secondary.active { background: var(--c-secondary); color: white;  }
 button.btnp.warning.active   { background: var(--c-warning); color: white;  }
 button.btnp.error.active     { background: var(--c-error); color: white;  }
 
-button.btn.small { padding: 1px 2px; border: none}
+button.btn.small { padding: 1px 4px; border: none}
 button.btn.transparent { background: #ffffff00}
 
 button.btn.transparent:hover           { background: var(--c-standard-l); filter: none}

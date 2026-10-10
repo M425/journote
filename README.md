@@ -49,33 +49,3 @@ Per eseguire i test locali:
 ```bash
 python3 -m unittest discover -s tests -v
 ```
-
-## Build Windows
-
-Per creare l'eseguibile Windows:
-
-1. Assicurati di avere Python 3.10+ installato
-2. Esegui lo script di build:
-   ```bash
-   build_windows.bat
-   ```
-
-La procedura crea un virtual environment `.venv`, scarica le dipendenze e genera `dist/Journote.exe`.
-
-## Docker
-
-Per eseguire in Docker:
-```bash
-docker build -t journote .
-docker run -p 8000:8000 -v $(pwd)/data:/data journote
-```
-
-Per il modo sviluppo:
-```bash
-docker build -f Dockerfile.dev -t journote-dev .
-docker run -p 8000:8000 -v $(pwd)/data:/data -v $(pwd):/app journote-dev
-```
-
-## Nota importante
-
-Questa è una versione modificata per il mio uso personale. Le istruzioni qui riportate sono specifiche per il mio ambiente di lavoro e potrebbero differire da quelle ufficiali.

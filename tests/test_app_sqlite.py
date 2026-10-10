@@ -7,21 +7,20 @@ from io import BytesIO
 _data_directory = tempfile.TemporaryDirectory()
 os.environ["JOURNOTE_DATA_DIR"] = _data_directory.name
 
-from app import DATABASE_PATH, STORE_NOTES, STORE_TAGS, app
+from app import DATABASE_PATH, STORE, app
 
 
 def tearDownModule():
-    for store in (STORE_NOTES, STORE_TAGS):
-        store.close()
+    STORE.close()
     _data_directory.cleanup()
 
 
 class SQLiteApiTests(unittest.TestCase):
     def setUp(self):
-        for store in (STORE_NOTES, STORE_TAGS):
-            for record in store.find_all():
-                key = record["id"] if "id" in record else record["name"]
-                store.delete(key)
+        for note in STORE.select_notes():
+            STORE.delete_note(note["id"])
+        for tag in STORE.select_tags():
+            STORE.delete_tag(tag["name"])
         self.client = app.test_client()
 
     def test_tag_aggregation_works_without_authentication(self):
@@ -69,7 +68,7 @@ class SQLiteApiTests(unittest.TestCase):
 
         tables = self.client.get("/api/explorer/tables")
         self.assertEqual(tables.status_code, 200)
-        self.assertEqual(tables.json, ["note_tags", "notes", "tags"])
+        self.assertEqual(tables.json, ["note_tags", "notes", "tag_properties", "tags"])
 
         selected = self.client.post("/api/explorer/query", json={
             "query": "SELECT n.id, n.text, t.name FROM notes n "
@@ -85,7 +84,7 @@ class SQLiteApiTests(unittest.TestCase):
             "query": "DELETE FROM notes",
         })
         self.assertEqual(deleted.status_code, 400)
-        self.assertEqual(len(STORE_NOTES.find_all()), 1)
+        self.assertEqual(len(STORE.select_notes()), 1)
 
     def test_renaming_tag_updates_note_text_and_relation(self):
         created = self.client.post("/api/notes", json={
@@ -101,11 +100,14 @@ class SQLiteApiTests(unittest.TestCase):
             "rename": "#new-name",
         })
         self.assertEqual(renamed.status_code, 200)
-        note = STORE_NOTES.find_by_id(note_id)
+        note = STORE.get_note(note_id)
         self.assertIn("#new-name", note["text"])
         self.assertEqual(note["tags"], ["#new-name"])
-        self.assertEqual(STORE_NOTES.find_in_list("tags", "#old-name"), [])
-        self.assertEqual(STORE_TAGS.find_by_id("#new-name")["treed"], False)
+        self.assertEqual(STORE.select_notes(
+            "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+            "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)", ("#old-name",)
+        ), [])
+        self.assertEqual(STORE.get_tag("#new-name")["treed"], False)
 
     def test_clipboard_image_upload_and_retrieval(self):
         image_bytes = b"\x89PNG\r\n\x1a\nclipboard-image-test"

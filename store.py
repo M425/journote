@@ -1,36 +1,46 @@
-import json
-import logging
+"""Lean SQLite persistence for notes, tags and tag properties.
+
+The store is deliberately thin: callers write their own WHERE clauses and
+pass them to ``select_notes`` / ``select_tags`` together with optional
+query parameters and a limit.
+"""
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+TAG_CATEGORIES = {"#": "Projects", "@": "Persons", ">": "Events", "+": "Generic"}
 
 
-logger = logging.getLogger(__name__)
+def tag_category(tag: str) -> str:
+    return TAG_CATEGORIES.get(tag[:1], "FullText")
 
 
-class SQLiteStore:
-    def __init__(self, name: str, database_path: Path, search_key: str, legacy_path: Optional[Path] = None):
-        if name not in {"notes", "tags"}:
-            raise ValueError("SQLiteStore supports notes and tags.")
-        self._name = name
-        self._search_key = search_key
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+class Store:
+    def __init__(self, database_path: Path):
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._connection = sqlite3.connect(self.database_path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.execute("PRAGMA foreign_keys = ON")
-        self._initialize_schema()
-        self._migrate_payload_table()
-        self._import_legacy(legacy_path)
+        self._create_schema()
 
-    def _initialize_schema(self) -> None:
+    def _create_schema(self) -> None:
         with self._lock, self._connection:
             self._connection.executescript(
                 "CREATE TABLE IF NOT EXISTS notes ("
                 "id TEXT PRIMARY KEY, timestamp INTEGER, date TEXT, "
-                "text TEXT NOT NULL DEFAULT '', task TEXT, duedate TEXT);"
+                "text TEXT NOT NULL DEFAULT '', task TEXT, duedate TEXT, "
+                "reply TEXT, replied_to TEXT, "
+                "FOREIGN KEY (reply) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL, "
+                "FOREIGN KEY (replied_to) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL);"
                 "CREATE TABLE IF NOT EXISTS tags ("
                 "name TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT 'Generic', "
                 "treed INTEGER NOT NULL DEFAULT 0, parent TEXT, content TEXT NOT NULL DEFAULT '');"
@@ -46,112 +56,74 @@ class SQLiteStore:
                 "CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);"
                 "CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task);"
                 "CREATE INDEX IF NOT EXISTS idx_notes_duedate ON notes(duedate);"
+                "CREATE INDEX IF NOT EXISTS idx_notes_reply ON notes(reply);"
+                "CREATE INDEX IF NOT EXISTS idx_notes_replied_to ON notes(replied_to);"
+                "CREATE INDEX IF NOT EXISTS idx_notes_reply ON notes(reply);"
+                "CREATE INDEX IF NOT EXISTS idx_notes_replied_to ON notes(replied_to);"
                 "CREATE INDEX IF NOT EXISTS idx_tags_parent ON tags(parent);"
                 "CREATE INDEX IF NOT EXISTS idx_note_tags_tag_note ON note_tags(tag_name, note_id);"
                 "CREATE INDEX IF NOT EXISTS idx_note_tags_note_position ON note_tags(note_id, position);"
             )
+            # Migration: add reply / replied_to columns to pre-existing notes tables.
+            existing_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(notes)").fetchall()
+            }
+            for column in ("reply", "replied_to"):
+                if column not in existing_columns:
+                    self._connection.execute(f"ALTER TABLE notes ADD COLUMN {column} TEXT")
+            # Migration: shrink note ids to the last 12 characters of the uuid.
+            # Rebuild the notes table (SQLite cannot alter column types in place)
+            # and remap references in note_tags and reply/replied_to columns.
+            id_lengths = {
+                row["length"]
+                for row in self._connection.execute(
+                    "SELECT DISTINCT length(id) AS length FROM notes"
+                ).fetchall()
+            }
+            if id_lengths - {12}:
+                self._connection.execute("PRAGMA foreign_keys = OFF")
+                self._connection.executescript(
+                    "CREATE TABLE notes_new ("
+                    "id TEXT PRIMARY KEY, timestamp INTEGER, date TEXT, "
+                    "text TEXT NOT NULL DEFAULT '', task TEXT, duedate TEXT, "
+                    "reply TEXT, replied_to TEXT, "
+                    "FOREIGN KEY (reply) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL, "
+                    "FOREIGN KEY (replied_to) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL);"
+                    "INSERT INTO notes_new (id, timestamp, date, text, task, duedate, reply, replied_to) "
+                    "SELECT substr(id, -12), timestamp, date, text, task, duedate, "
+                    "CASE WHEN reply IS NULL THEN NULL ELSE substr(reply, -12) END, "
+                    "CASE WHEN replied_to IS NULL THEN NULL ELSE substr(replied_to, -12) END "
+                    "FROM notes GROUP BY substr(id, -12);"
+                    "UPDATE note_tags SET note_id = substr(note_id, -12);"
+                    "DROP TABLE notes;"
+                    "ALTER TABLE notes_new RENAME TO notes;"
+                    "CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);"
+                    "CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task);"
+                    "CREATE INDEX IF NOT EXISTS idx_notes_duedate ON notes(duedate);"
+                    "CREATE INDEX IF NOT EXISTS idx_notes_reply ON notes(reply);"
+                    "CREATE INDEX IF NOT EXISTS idx_notes_replied_to ON notes(replied_to);"
+                )
+                self._connection.execute("PRAGMA foreign_keys = ON")
 
-    def _migrate_payload_table(self) -> None:
-        legacy_table = f"store_{self._name}"
-        exists = self._connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (legacy_table,),
-        ).fetchone()
-        if not exists:
-            return
-        columns = {
-            row["name"]
-            for row in self._connection.execute(f'PRAGMA table_info("{legacy_table}")')
-        }
-        if not {"entity_key", "payload"}.issubset(columns):
-            return
+    # ------------------------------------------------------------------ notes
 
-        records = self._connection.execute(
-            f'SELECT entity_key, payload FROM "{legacy_table}" ORDER BY rowid'
-        ).fetchall()
-        with self._lock, self._connection:
-            for row in records:
-                if self._record_exists(row["entity_key"]):
-                    continue
-                self._insert_record(json.loads(row["payload"]))
-            self._connection.execute(f'DROP TABLE "{legacy_table}"')
-        logger.info("Migrated %d records from %s to relational tables", len(records), legacy_table)
-
-    def _import_legacy(self, legacy_path: Optional[Path]) -> None:
-        if not legacy_path or not legacy_path.is_file():
-            return
-        target_table = self._name
-        count = self._connection.execute(f"SELECT COUNT(*) FROM {target_table}").fetchone()[0]
-        if count:
-            return
-        with legacy_path.open("r", encoding="utf-8") as legacy_file:
-            records = json.load(legacy_file)
-        if not isinstance(records, list):
-            raise ValueError(f"Legacy data in {legacy_path} must be a list")
-        with self._lock, self._connection:
-            for record in records:
-                self._insert_record(record)
-        logger.info("Imported %d %s records from %s", len(records), self._name, legacy_path)
-
-    def _record_exists(self, key: str) -> bool:
-        column = "id" if self._name == "notes" else "name"
-        return self._connection.execute(
-            f"SELECT 1 FROM {self._name} WHERE {column} = ?", (key,)
-        ).fetchone() is not None
-
-    @staticmethod
-    def _tag_category(tag: str) -> str:
-        return {"#": "Projects", "@": "Persons", ">": "Events", "+": "Generic"}.get(tag[:1], "FullText")
-
-    @staticmethod
-    def _as_bool(value: Any) -> int:
-        if isinstance(value, str):
-            return int(value.strip().lower() in {"1", "true", "yes", "on"})
-        return int(bool(value))
-
-    def _insert_record(self, record: Dict[str, Any]) -> None:
-        if self._name == "tags":
-            self._connection.execute(
-                "INSERT INTO tags (name, category, treed, parent, content) VALUES (?, ?, ?, ?, ?)",
-                (
-                    str(record["name"]),
-                    record.get("category") or self._tag_category(str(record["name"])),
-                    self._as_bool(record.get("treed", False)),
-                    record.get("parent"),
-                    record.get("content") or "",
-                ),
-            )
-            return
-
-        self._connection.execute(
-            "INSERT INTO notes (id, timestamp, date, text, task, duedate) VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                str(record["id"]),
-                record.get("timestamp"),
-                record.get("date"),
-                record.get("text") or "",
-                record.get("task"),
-                record.get("duedate"),
-            ),
+    def select_notes(self, where: str = "", params: Tuple[Any, ...] = (), limit: Optional[int] = None,
+                     order_by: str = "n.date, n.timestamp") -> List[Dict[str, Any]]:
+        """Select notes. ``where`` is a raw SQL clause on ``notes AS n``,
+        e.g. ``"date = ?"`` or ``"task IN ('low', 'mid', 'high')"``."""
+        sql = (
+            "SELECT n.id, n.timestamp, n.date, n.text, n.task, n.duedate, n.reply, n.replied_to, nt.tag_name "
+            "FROM notes AS n LEFT JOIN note_tags AS nt ON nt.note_id = n.id"
         )
-        for position, tag in enumerate(dict.fromkeys(record.get("tags") or [])):
-            self._connection.execute(
-                "INSERT OR IGNORE INTO tags (name, category) VALUES (?, ?)",
-                (tag, self._tag_category(tag)),
-            )
-            self._connection.execute(
-                "INSERT INTO note_tags (note_id, tag_name, position) VALUES (?, ?, ?)",
-                (str(record["id"]), tag, position),
-            )
-
-    def _fetch_notes(self, where: str = "", params: tuple = (), order_by: str = "n.rowid") -> List[Dict[str, Any]]:
-        rows = self._connection.execute(
-            "SELECT n.id, n.timestamp, n.date, n.text, n.task, n.duedate, nt.tag_name "
-            "FROM notes AS n LEFT JOIN note_tags AS nt ON nt.note_id = n.id "
-            f"{where} ORDER BY {order_by}, nt.position",
-            params,
-        ).fetchall()
-        notes = {}
+        if where:
+            sql += f" WHERE {where}"
+        sql += f" ORDER BY {order_by}, nt.position"
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        with self._lock:
+            rows = self._connection.execute(sql, params).fetchall()
+        notes: Dict[str, Dict[str, Any]] = {}
         for row in rows:
             note = notes.get(row["id"])
             if note is None:
@@ -162,6 +134,8 @@ class SQLiteStore:
                     "text": row["text"],
                     "task": row["task"],
                     "duedate": row["duedate"],
+                    "reply": row["reply"],
+                    "replied_to": row["replied_to"],
                     "tags": [],
                 }
                 notes[row["id"]] = note
@@ -169,95 +143,54 @@ class SQLiteStore:
                 note["tags"].append(row["tag_name"])
         return list(notes.values())
 
-    @staticmethod
-    def _tag_record(row: sqlite3.Row) -> Dict[str, Any]:
-        return {
-            "name": row["name"],
-            "category": row["category"],
-            "treed": bool(row["treed"]),
-            "parent": row["parent"],
-            "content": row["content"],
-        }
+    def get_note(self, note_id: str) -> Optional[Dict[str, Any]]:
+        notes = self.select_notes("n.id = ?", (note_id,))
+        return notes[0] if notes else None
 
-    def find_by_id(self, value_to_search: str) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            if self._name == "notes":
-                notes = self._fetch_notes("WHERE n.id = ?", (value_to_search,))
-                return notes[0] if notes else None
-            record = self._connection.execute(
-                "SELECT name, category, treed, parent, content FROM tags WHERE name = ?",
-                (value_to_search,),
-            ).fetchone()
-            return self._tag_record(record) if record else None
-
-    def find_eq(self, key_to_search: str, value_to_search: Any) -> List[Dict[str, Any]]:
-        with self._lock:
-            if self._name == "notes":
-                if key_to_search == "tags":
-                    return self.find_in_list("tags", value_to_search)
-                if key_to_search not in {"id", "timestamp", "date", "text", "task", "duedate"}:
-                    return []
-                return self._fetch_notes(f"WHERE n.{key_to_search} = ?", (value_to_search,))
-            if key_to_search not in {"name", "category", "treed", "parent", "content"}:
-                return []
-            value = self._as_bool(value_to_search) if key_to_search == "treed" else value_to_search
-            rows = self._connection.execute(
-                f"SELECT name, category, treed, parent, content FROM tags WHERE {key_to_search} = ? ORDER BY rowid",
-                (value,),
-            ).fetchall()
-            return [self._tag_record(row) for row in rows]
-
-    def find_in_list(self, key_to_search: str, value_to_search: Any) -> List[Dict[str, Any]]:
-        if self._name != "notes" or key_to_search != "tags":
-            return []
-        with self._lock:
-            return self._fetch_notes(
-                "WHERE EXISTS (SELECT 1 FROM note_tags AS filter_tags "
-                "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)",
-                (value_to_search,),
+    def add_note(self, note: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO notes (id, timestamp, date, text, task, duedate, reply, replied_to) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(note["id"]),
+                    note.get("timestamp"),
+                    note.get("date"),
+                    note.get("text") or "",
+                    note.get("task"),
+                    note.get("duedate"),
+                    note.get("reply"),
+                    note.get("replied_to"),
+                ),
             )
+            self._attach_tags(str(note["id"]), note.get("tags") or [])
+        return dict(note)
 
-    def find_any(self, key_to_search: str, values_to_search: List[Any]) -> List[Dict[str, Any]]:
-        if self._name != "notes" or key_to_search not in {"id", "timestamp", "date", "text", "task", "duedate"} or not values_to_search:
-            return []
-        placeholders = ", ".join("?" for _ in values_to_search)
-        with self._lock:
-            return self._fetch_notes(f"WHERE n.{key_to_search} IN ({placeholders})", tuple(values_to_search))
+    def patch_note(self, note_id: str, changes: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock, self._connection:
+            current = self.get_note(note_id)
+            if current is None:
+                raise KeyError("Note not found.")
+            current.update({field: value for field, value in changes.items() if field != "id"})
+            self._connection.execute(
+                "UPDATE notes SET timestamp = ?, date = ?, text = ?, task = ?, duedate = ?, "
+                "reply = ?, replied_to = ? WHERE id = ?",
+                tuple(current.get(field) for field in ("timestamp", "date", "text", "task", "duedate", "reply", "replied_to")) + (note_id,),
+            )
+            if "tags" in changes:
+                self._connection.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+                self._attach_tags(note_id, current.get("tags") or [])
+        return self.get_note(note_id) or current
 
-    def find_by_tag_expression(self, expression: tuple) -> List[Dict[str, Any]]:
-        def compile_node(node):
-            operator = node[0]
-            if operator == "tag":
-                return (
-                    "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
-                    "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)",
-                    [node[1]],
-                )
-            if operator == "not":
-                clause, params = compile_node(node[1])
-                return f"NOT ({clause})", params
-            if operator in {"and", "or"}:
-                left, left_params = compile_node(node[1])
-                right, right_params = compile_node(node[2])
-                return f"({left} {operator.upper()} {right})", left_params + right_params
-            raise ValueError(f"Unknown filter operator: {operator}")
+    def delete_note(self, note_id: str) -> Dict[str, Any]:
+        with self._lock, self._connection:
+            note = self.get_note(note_id)
+            if note is None:
+                raise KeyError("Note not found.")
+            self._connection.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+            return note
 
-        clause, params = compile_node(expression)
-        with self._lock:
-            return self._fetch_notes(f"WHERE {clause}", tuple(params), "n.date, n.timestamp")
-
-    def find_all(self) -> List[Dict[str, Any]]:
-        with self._lock:
-            if self._name == "notes":
-                return self._fetch_notes()
-            rows = self._connection.execute(
-                "SELECT name, category, treed, parent, content FROM tags ORDER BY rowid"
-            ).fetchall()
-            return [self._tag_record(row) for row in rows]
-
-    def count_by_date_range(self, start_date: str, end_date: str) -> Dict[str, int]:
-        if self._name != "notes":
-            return {}
+    def count_notes_by_date(self, start_date: str, end_date: str) -> Dict[str, int]:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT date, COUNT(*) AS note_count FROM notes "
@@ -266,62 +199,93 @@ class SQLiteStore:
             ).fetchall()
             return {row["date"]: row["note_count"] for row in rows}
 
-    def add(self, obj: Dict[str, Any]) -> Dict[str, Any]:
-        with self._lock, self._connection:
-            self._insert_record(obj)
-        return dict(obj)
+    def _attach_tags(self, note_id: str, tags: List[str]) -> None:
+        for position, tag in enumerate(dict.fromkeys(tags)):
+            self._connection.execute(
+                "INSERT OR IGNORE INTO tags (name, category) VALUES (?, ?)",
+                (tag, tag_category(tag)),
+            )
+            self._connection.execute(
+                "INSERT INTO note_tags (note_id, tag_name, position) VALUES (?, ?, ?)",
+                (note_id, tag, position),
+            )
 
-    def delete(self, key: str) -> Dict[str, Any]:
-        with self._lock, self._connection:
-            record = self.find_by_id(key)
-            if record is None:
-                raise KeyError("Object not found.")
-            column = "id" if self._name == "notes" else "name"
-            self._connection.execute(f"DELETE FROM {self._name} WHERE {column} = ?", (key,))
-            return record
+    # ------------------------------------------------------------------- tags
 
-    def patch(self, key: str, obj: Dict[str, Any]) -> Dict[str, Any]:
+    def select_tags(self, where: str = "", params: Tuple[Any, ...] = (), limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Select tags. ``where`` is a raw SQL clause on ``tags``, e.g. ``"parent = ?"``."""
+        sql = "SELECT name, category, treed, parent, content FROM tags"
+        if where:
+            sql += f" WHERE {where}"
+        sql += " ORDER BY rowid"
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"
+        with self._lock:
+            rows = self._connection.execute(sql, params).fetchall()
+        return [{**dict(row), "treed": bool(row["treed"])} for row in rows]
+
+    def get_tag(self, name: str) -> Optional[Dict[str, Any]]:
+        tags = self.select_tags("name = ?", (name,))
+        return tags[0] if tags else None
+
+    def add_tag(self, tag: Dict[str, Any]) -> Dict[str, Any]:
+        record = {
+            "name": str(tag["name"]),
+            "category": tag.get("category") or tag_category(str(tag["name"])),
+            "treed": _as_bool(tag.get("treed", False)),
+            "parent": tag.get("parent"),
+            "content": tag.get("content") or "",
+        }
         with self._lock, self._connection:
-            current = self.find_by_id(key)
+            self._connection.execute(
+                "INSERT INTO tags (name, category, treed, parent, content) VALUES (?, ?, ?, ?, ?)",
+                (record["name"], record["category"], int(record["treed"]), record["parent"], record["content"]),
+            )
+        return record
+
+    def patch_tag(self, name: str, changes: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock, self._connection:
+            current = self.get_tag(name)
             if current is None:
-                raise KeyError("Object not found.")
-            current.update({field: value for field, value in obj.items() if field != self._search_key})
-            if self._name == "notes":
-                fields = ("timestamp", "date", "text", "task", "duedate")
-                self._connection.execute(
-                    "UPDATE notes SET timestamp = ?, date = ?, text = ?, task = ?, duedate = ? WHERE id = ?",
-                    tuple(current.get(field) for field in fields) + (key,),
-                )
-                if "tags" in obj:
-                    self._connection.execute("DELETE FROM note_tags WHERE note_id = ?", (key,))
-                    for position, tag in enumerate(dict.fromkeys(current.get("tags") or [])):
-                        self._connection.execute(
-                            "INSERT OR IGNORE INTO tags (name, category) VALUES (?, ?)",
-                            (tag, self._tag_category(tag)),
-                        )
-                        self._connection.execute(
-                            "INSERT INTO note_tags (note_id, tag_name, position) VALUES (?, ?, ?)",
-                            (key, tag, position),
-                        )
-            else:
-                self._connection.execute(
-                    "UPDATE tags SET category = ?, treed = ?, parent = ?, content = ? WHERE name = ?",
-                    (
-                        current.get("category") or self._tag_category(key),
-                        self._as_bool(current.get("treed", False)),
-                        current.get("parent"),
-                        current.get("content") or "",
-                        key,
-                    ),
-                )
-            return self.find_by_id(key) or current
+                raise KeyError("Tag not found.")
+            fields = {key: current[key] for key in ("category", "treed", "parent", "content")}
+            if "category" in changes:
+                fields["category"] = changes["category"]
+            if "treed" in changes:
+                fields["treed"] = _as_bool(changes["treed"])
+            if "parent" in changes:
+                fields["parent"] = changes["parent"]
+            if "content" in changes:
+                fields["content"] = changes["content"]
+            self._connection.execute(
+                "UPDATE tags SET category = ?, treed = ?, parent = ?, content = ? WHERE name = ?",
+                (fields["category"], int(fields["treed"]), fields["parent"], fields["content"], name),
+            )
+        return self.get_tag(name) or current
+
+    def delete_tag(self, name: str) -> Dict[str, Any]:
+        with self._lock, self._connection:
+            tag = self.get_tag(name)
+            if tag is None:
+                raise KeyError("Tag not found.")
+            self._connection.execute("DELETE FROM tags WHERE name = ?", (name,))
+            return tag
+
+    def rename_tag(self, old_name: str, new_name: str) -> Dict[str, Any]:
+        with self._lock, self._connection:
+            if self.get_tag(old_name) is None:
+                raise KeyError("Tag not found.")
+            self._connection.execute("UPDATE tags SET name = ? WHERE name = ?", (new_name, old_name))
+            self._connection.execute("UPDATE note_tags SET tag_name = ? WHERE tag_name = ?", (new_name, old_name))
+        return self.get_tag(new_name)
+
+    # ---------------------------------------------------------- tag properties
 
     def get_tag_properties(self, tag_name: str) -> List[Dict[str, Any]]:
-        """Get all properties for a specific tag."""
         with self._lock:
             rows = self._connection.execute(
                 "SELECT key, value FROM tag_properties WHERE tag_name = ? ORDER BY key",
-                (tag_name,)
+                (tag_name,),
             ).fetchall()
             return [{"key": row["key"], "value": row["value"]} for row in rows]
 
@@ -344,7 +308,7 @@ class SQLiteStore:
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT OR IGNORE INTO tags (name, category) VALUES (?, ?)",
-                (tag_name, self._tag_category(tag_name)),
+                (tag_name, tag_category(tag_name)),
             )
             if replace:
                 self._connection.execute("DELETE FROM tag_properties WHERE tag_name = ?", (tag_name,))
@@ -357,38 +321,12 @@ class SQLiteStore:
         self.set_tag_properties(tag_name, [{"key": key, "value": value}], replace=False)
 
     def delete_tag_property(self, tag_name: str, key: str) -> None:
-        """Delete a property for a specific tag."""
         with self._lock, self._connection:
             self._connection.execute(
                 "DELETE FROM tag_properties WHERE tag_name = ? AND key = ?",
-                (tag_name, key)
+                (tag_name, key),
             )
-
-    def get_tag_property_count(self, tag_name: str) -> int:
-        """Get the count of properties for a specific tag."""
-        with self._lock, self._connection:
-            row = self._connection.execute(
-                "SELECT COUNT(*) as count FROM tag_properties WHERE tag_name = ?",
-                (tag_name,)
-            ).fetchone()
-            return row["count"] if row else 0
-
-    def re_id(self, old_key: str, new_key: str) -> Dict[str, Any]:
-        with self._lock, self._connection:
-            current = self.find_by_id(old_key)
-            if current is None:
-                raise KeyError("Object not found.")
-            column = "id" if self._name == "notes" else "name"
-            self._connection.execute(
-                f"UPDATE {self._name} SET {column} = ? WHERE {column} = ?",
-                (new_key, old_key),
-            )
-            current[self._search_key] = new_key
-            return current
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
-
-
-RelationalSQLiteStore = SQLiteStore

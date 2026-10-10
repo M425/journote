@@ -185,11 +185,11 @@ const model = {
       }
       return t;
     })
-  } },
+  }},
   tagsBox_projects: { _v: false, subs: ['TagsBoxList'] },
   tagsBox_task: { _v: true, subs: ['TagsBoxList'] },
   tagsBox_events: { _v: false, subs: ['TagsBoxList'] },
-  tagsBox_persons: { _v: true, subs: ['TagsBoxList'] },
+  tagsBox_persons: { _v: false, subs: ['TagsBoxList'] },
   tagsBox_generic: { _v: false, subs: ['TagsBoxList'] },
   tagsVisible: { _v: [], subs: [] },
   tagsActive: { _v: [], subs: [] },
@@ -270,7 +270,6 @@ const businessLogic = {
     });
     tasks.forEach(task => {
       if (task.firstTag != null && task.firstTag != '') {
-        console.log(task)
         childrenOf[task.firstTag].tasks.push(task);
       }
     })
@@ -524,27 +523,6 @@ const page = {
   }
 };
 
-// BUSINESS LOGIC LAYER - PAGE SPECIFIC METHODS
-const pageBusinessLogic = {
-  async saveNote(raw, tdate) {
-    return businessLogic.saveNote(raw, tdate);
-  },
-
-  async editNote(note, previousTags = note.tags, previousDate = note.date) {
-    const response = await api.api(`/api/notes/${note.id}`, {
-      method: 'PATCH',
-      body: {
-        text: note.text,
-        date: note.date
-      }
-    });
-    if(!response || !response.note.id) {
-      alert('Error saving note');
-      return;
-    }
-    return response.note;
-  }
-};
 // VIEW
 const view = {
   createEl(typ, options) {
@@ -641,6 +619,11 @@ const view = {
           this.ed.setRangeText('  ', this.ed.selectionStart, this.ed.selectionEnd, 'end');
           return;
         }
+        if (ev.ctrlKey && ev.key.toLowerCase() == 'd') {
+          ev.preventDefault();
+          this.ed.value = this.ed.value + new Date().toISOString().slice(0, 10);
+          return;
+        }
         if (ev.ctrlKey && !ev.altKey && ['b', 'i', 'k'].includes(ev.key.toLowerCase())) {
           ev.preventDefault();
           const marker = ev.key.toLowerCase() === 'b' ? '**' : ev.key.toLowerCase() === 'i' ? '*' : '`';
@@ -696,6 +679,13 @@ const view = {
       eid('EditorUpdateBtn').style.display = 'none';
       eid('EditorClearBtn').style.display = 'none';
     },
+    startReply(note) {
+      this.clear();
+      this.ed.value = `<R:${note.id} `;
+      this.resizeEditor();
+      this.ed.focus();
+      this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
+    },
     renderEditNote(note) {
       this.currentNote = note;
       this.ed.value = note.text;
@@ -713,7 +703,7 @@ const view = {
       const newTags = businessLogic.getNewTags(raw);
       let saved = false;
       try {
-        const response = await pageBusinessLogic.saveNote(raw, this.parseLeadingDate(raw));
+        const response = await businessLogic.saveNote(raw, this.parseLeadingDate(raw));
         saved = true;
         const isProperty = response.kind === 'tag_property';
         if (isProperty) {
@@ -752,7 +742,7 @@ const view = {
       const previousDate = this.currentNote.date;
       this.currentNote.text = raw;
       this.currentNote.date = date || this.currentNote.date;
-      const note = await pageBusinessLogic.editNote(this.currentNote, previousTags, previousDate);
+      const note = await businessLogic.editNote(this.currentNote, previousTags, previousDate);
       if (note) {
         view.Main.editedNote(note, previousTags, previousDate);
         view.EditorWrap.clear();
@@ -1045,7 +1035,7 @@ const view = {
       if (!col) return;
       col.classList.toggle('maximized');
     },
-    genNoteItem(n, currentTag) {
+    genNoteItem(n, currentTag, relatedRole = null) {
       let taskClass = ''
       if(n.task != null && n.task != '') { taskClass = 'task-'+n.task }
 
@@ -1053,12 +1043,47 @@ const view = {
         className: `noteItem ${taskClass}`,
         dataset: {id: n.id}
       })
+      if (relatedRole) {
+        elNoteItem.classList.add('noteItem-related', relatedRole === 'parent' ? 'noteItem-related-parent' : 'noteItem-related-child');
+      }
       
       const elNoteDate = elNoteItem.appendChild(view.createEl('div', {
         className: 'noteDate flex-col',
         innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '-' + n.date.substring(8,10) + 
                 (n.duedate ? '<br><span class="color-purple-4">' + new Date(n.duedate).toLocaleString('default', { month: 'short' }) + '-' + n.duedate.substring(8,10) + '</span>' : ''  )
       }));
+
+      // Reply indicators: up arrow (replies to another note) above down arrow (has replies).
+      // Both arrows are always shown; disabled (grey) when the relation is not set.
+      {
+        const elReplyIndicators = elNoteItem.appendChild(view.createEl('div', {
+          className: 'noteReplyIndicators flex-col',
+          style: 'display:flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 1px; padding-left: 2px;'
+        }));
+        if (!elNoteItem.classList.contains('noteItem-related-child')) {
+          elReplyIndicators.appendChild(view.createEl('button', {
+            className: n.replied_to ? 'btn primary small' : 'btn transparent muted small',
+            innerHTML: '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
+            title: n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
+            'aria-label': n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
+            tabindex: n.replied_to ? 0 : -1,
+            onclick: () => { if (n.replied_to) view.Main.openRelatedNote(n.replied_to, 'above', elNoteItem); }
+          }));
+        }
+        if (!elNoteItem.classList.contains('noteItem-related-parent')) {
+          elReplyIndicators.appendChild(view.createEl('button', {
+            className: n.reply ? 'btn primary small' : 'btn transparent muted small',
+            innerHTML: '<i class="fa-solid fa-caret-down fa-2xs fa-fw"></i>',
+            title: n.reply ? 'Ha una risposta' : 'Nessuna risposta',
+            'aria-label': n.reply ? 'Ha una risposta' : 'Nessuna risposta',
+            tabindex: n.reply ? 0 : -1,
+            onclick: (ev) => {
+              if (n.reply) {ev.stopPropagation(); view.Main.openRelatedNote(n.reply, 'below', elNoteItem);}
+              else {ev.stopPropagation(); view.EditorWrap.startReply(n);}
+            },
+          }));
+        }
+      }
       const elNoteDays = elNoteItem.appendChild(view.createEl('div', {
         className: 'noteDays flex-col',
         innerHTML: helper.diffToToday(new Date(n.date)) + 
@@ -1077,7 +1102,7 @@ const view = {
 
       // Edit button
       elNoteBtnWrap.appendChild(view.createEl('button', {
-        className: 'btn primary small transparent',
+        className: 'btn muted small transparent',
         innerHTML: '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
         title: 'Edit note',
         onclick: (ev) => {
@@ -1088,7 +1113,7 @@ const view = {
       
       // Delete button
       const elNoteDelBtn = elNoteBtnWrap.appendChild(view.createEl('button', {
-        className: 'btn error small transparent',
+        className: 'btn muted small transparent',
         innerHTML: '<i class="fa fa-x fa-solid fa-fw fa-2xs"></i>',
         title: 'Delete note',
         onclick: async (ev) => {
@@ -1175,6 +1200,24 @@ const view = {
         }
       }
       return elNoteText
+    },
+    async openRelatedNote(noteId, position = 'below', anchorItem = null) {
+      if (!noteId) return;
+      try {
+        const note = await api.api(`/api/notes/${noteId}`);
+        if (!note) return;
+        const noteList = anchorItem?.closest('.notesList');
+        if (!noteList) return;
+        const elNoteItem = this.genNoteItem(note, noteList.closest('.column-content')?.dataset.key || note.date, position === 'above' ? 'parent' : 'child');
+        if (position === 'above') {
+          anchorItem.before(elNoteItem);
+        } else {
+          anchorItem.after(elNoteItem);
+        }
+        elNoteItem.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'nearest'});
+      } catch (error) {
+        console.error('Cannot open related note:', error);
+      }
     },
     makeResizable(colEl, handle) {
       let startX, startWidth;
@@ -1308,12 +1351,12 @@ const view = {
 
       const elTagsTasks = document.createElement('button');
       elTagsTasks.type = 'button';
-      elTagsTasks.id = 'tagsEventsToggle';
-      elTagsTasks.className = `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
+      elTagsTasks.id = 'tagsTasksToggle';
+      elTagsTasks.className = `btnp primary${model.get('tagsBox_task') ? ' active' : ''}`;
       elTagsTasks.textContent = '!';
       elTagsTasks.title = 'Mostra/nascondi tag evento';
       elTagsTasks.setAttribute('aria-label', elTagsTasks.title);
-      elTagsTasks.setAttribute('aria-pressed', String(model.get('tagsBox_events')));
+      elTagsTasks.setAttribute('aria-pressed', String(model.get('tagsBox_task')));
       elTagsTasks.onclick = ev => {
         ev.preventDefault();
         elTagsTasks.classList.toggle('active');
@@ -1323,12 +1366,12 @@ const view = {
 
       const elTagsToggleProjects = document.createElement('button');
       elTagsToggleProjects.type = 'button';
-      elTagsToggleProjects.id = 'tagsEventsToggle';
-      elTagsToggleProjects.className = `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
+      elTagsToggleProjects.id = 'tagsProjectToggle';
+      elTagsToggleProjects.className = `btnp primary${model.get('tagsBox_projects') ? ' active' : ''}`;
       elTagsToggleProjects.textContent = '#';
       elTagsToggleProjects.title = 'Mostra/nascondi tag evento';
       elTagsToggleProjects.setAttribute('aria-label', elTagsToggleProjects.title);
-      elTagsToggleProjects.setAttribute('aria-pressed', String(model.get('tagsBox_events')));
+      elTagsToggleProjects.setAttribute('aria-pressed', String(model.get('tagsBox_projects')));
       elTagsToggleProjects.onclick = ev => {
         ev.preventDefault();
         elTagsToggleProjects.classList.toggle('active');
@@ -1346,10 +1389,8 @@ const view = {
       elTagsToggleEvents.setAttribute('aria-pressed', String(model.get('tagsBox_events')));
       elTagsToggleEvents.onclick = ev => {
         ev.preventDefault();
-        const enabled = !model.get('tagsBox_events');
-        elTagsToggleEvents.classList.toggle('active', enabled);
-        elTagsToggleEvents.setAttribute('aria-pressed', String(enabled));
-        model.set('tagsBox_events', enabled);
+        elTagsToggleEvents.classList.toggle('active');
+        model.set('tagsBox_events', !model.get('tagsBox_events'));
       };
       this.el.appendChild(elTagsToggleEvents);
 
@@ -1363,10 +1404,8 @@ const view = {
       elTagsTogglePersons.setAttribute('aria-pressed', String(model.get('tagsBox_persons')));
       elTagsTogglePersons.onclick = ev => {
         ev.preventDefault();
-        const enabled = !model.get('tagsBox_persons');
-        elTagsTogglePersons.classList.toggle('active', enabled);
-        elTagsTogglePersons.setAttribute('aria-pressed', String(enabled));
-        model.set('tagsBox_persons', enabled);
+        elTagsTogglePersons.classList.toggle('active');
+        model.set('tagsBox_persons', !model.get('tagsBox_persons'));
       };
       this.el.appendChild(elTagsTogglePersons);
 
@@ -1380,10 +1419,8 @@ const view = {
       elTagsToggleGeneric.setAttribute('aria-pressed', String(model.get('tagsBox_generic')));
       elTagsToggleGeneric.onclick = ev => {
         ev.preventDefault();
-        const enabled = !model.get('tagsBox_generic');
-        elTagsToggleGeneric.classList.toggle('active', enabled);
-        elTagsToggleGeneric.setAttribute('aria-pressed', String(enabled));
-        model.set('tagsBox_generic', enabled);
+        elTagsToggleGeneric.classList.toggle('active');
+        model.set('tagsBox_generic', !model.get('tagsBox_generic'));
       };
       this.el.appendChild(elTagsToggleGeneric);
       return this.el;
@@ -1888,6 +1925,35 @@ const view = {
             innerHTML: helper.diffToToday(new Date(n.date)) + 
                     (n.duedate ? '<br><span class="color-purple-4">' + helper.diffToToday(new Date(n.duedate)) + '</span>': '' )
           }));
+          {
+            const elReplyIndicators = elNoteItem.appendChild(view.createEl('div', {
+              className: 'noteReplyIndicators flex-col',
+              style: 'display:flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 1px; padding-left: 2px;'
+            }));
+            if (!elNoteItem.classList.contains('noteItem-related-parent')) {
+              elReplyIndicators.appendChild(view.createEl('button', {
+                className: n.replied_to ? 'btn primary small transparent' : 'btn muted small transparent',
+                innerHTML: '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
+                title: n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
+                'aria-label': n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
+                tabindex: n.replied_to ? 0 : -1,
+                onclick: () => { if (n.replied_to) view.Main.openRelatedNote(n.replied_to, 'above', elNoteItem); },
+              }));
+            }
+            if (!elNoteItem.classList.contains('noteItem-related-child')) {
+              elReplyIndicators.appendChild(view.createEl('button', {
+                className: n.reply ? 'btn primary small transparent' : 'btn muted small transparent',
+                innerHTML: '<i class="fa-solid fa-caret-down fa-2xs fa-fw"></i>',
+                title: n.reply ? 'Ha una risposta' : 'Nessuna risposta',
+                'aria-label': n.reply ? 'Ha una risposta' : 'Nessuna risposta',
+                tabindex: n.reply ? 0 : -1,
+                onclick: (ev) => {
+                  if (n.reply) {ev.stopPropagation(); view.Main.openRelatedNote(n.reply, 'below', elNoteItem);}
+                  else { ev.stopPropagation(); view.EditorWrap.startReply(n);}
+                },
+              }));
+            }
+          }
           const elNoteText = elNoteItem
             .appendChild(view.createEl('div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
             .appendChild(view.Main.genNoteText(n, ''))

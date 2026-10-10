@@ -26,7 +26,7 @@ class APITests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json['kind'], 'tag_property')
             self.assertIsNone(response.json['note'])
-            self.assertEqual(app.STORE_NOTES.find_all(), [])
+            self.assertEqual(app.STORE.select_notes(), [])
         url = '/api/tags/Projects/demo/properties'
         self.assertEqual(client.get(url).json['properties'], [{'key': 'stato', 'value': 'due: tre\n\nquattro'}])
         self.assertEqual(client.patch(url, json={'properties': [{'key': 'url', 'value': 'https://a:b'}]}).status_code, 200)
@@ -35,7 +35,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(len(client.get(url).json['properties']), 2)
         self.assertEqual(client.get('/api/tags').json[0]['property_count'], 2)
         self.assertEqual(client.post('/api/notes', json={'text': 'Nota con #demo[stato] valore'}).status_code, 201)
-        self.assertEqual(len(app.STORE_NOTES.find_all()), 1)
+        self.assertEqual(len(app.STORE.select_notes()), 1)
         self.assertEqual(client.post('/api/notes', json={'text': None}).status_code, 400)
         self.assertEqual(client.get('/api/tags/Unknown/demo/properties').status_code, 400)
         self.assertEqual(client.get('/api/tags/Projects/missing/properties').status_code, 404)
@@ -47,6 +47,5 @@ if __name__ == '__main__':
     try:
         unittest.main()
     finally:
-        app.STORE_TAGS.close()
-        app.STORE_NOTES.close()
+        app.STORE.close()
         runtime.cleanup()

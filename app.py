@@ -10,7 +10,7 @@ import re
 import sqlite3
 from typing import Any, Dict
 from filter_rules import parse_filter_rule
-from store import RelationalSQLiteStore
+from store import Store
 
 
 # ---------------------------
@@ -32,6 +32,7 @@ app = Flask(__name__, static_folder=str(RESOURCE_DIR / "static"), static_url_pat
 CORS(app)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 SHORT_IMAGE_ID_LENGTH = 12
+SHORT_NOTE_ID_LENGTH = 12
 app.config["MAX_CONTENT_LENGTH"] = MAX_IMAGE_SIZE_BYTES + 64 * 1024
 
 IMAGE_FORMATS = {
@@ -42,8 +43,6 @@ IMAGE_FORMATS = {
     "image/bmp": (".bmp", lambda data: data.startswith(b"BM")),
 }
 
-NOTES_FILE = "notes.json"
-TAGS_FILE = "tags.json"
 CATEGORIES = {
     "Projects": "#",
     "Persons": "@",
@@ -52,8 +51,7 @@ CATEGORIES = {
     "Journal": ""
 }
 # ------------------ Data ------------------
-STORE_TAGS = RelationalSQLiteStore('tags', DATABASE_PATH, 'name', PORTABLE_DIR / TAGS_FILE)
-STORE_NOTES = RelationalSQLiteStore('notes', DATABASE_PATH, 'id', PORTABLE_DIR / NOTES_FILE)
+STORE = Store(DATABASE_PATH)
 
 # ------------------ Utilities ------------------
 
@@ -127,6 +125,22 @@ def extract_task_priority(text):
 
     return priority, duedate, cleaned
 
+def extract_reply_reference(text):
+    """Detect a reply reference like ``<R:<note-id>`` in the text.
+
+    Returns ``(parent_note_id, cleaned_text)``. The reference marker is
+    removed from the text; ``parent_note_id`` is ``None`` when no valid
+    reference to an existing note is found.
+    """
+    match = re.search(r'<R:([a-zA-Z0-9-]+)', text)
+    if not match:
+        return None, text
+    parent_id = match.group(1)
+    cleaned = (text[:match.start()] + text[match.end():]).strip()
+    if STORE.get_note(parent_id) is None:
+        return None, cleaned
+    return parent_id, cleaned
+
 def compare_tags(tags_before, tags_after):
     tags_before = set(tags_before)
     tags_after = set(tags_after)
@@ -140,6 +154,24 @@ def parse_tag_property_syntax(text):
     if not match or not match[2].strip():
         return []
     return [(match[1], match[2].strip(), match[3].strip())]
+
+def compile_tag_expression(expression):
+    """Compile a filter_rules expression tree into a SQL where clause + params."""
+    operator = expression[0]
+    if operator == "tag":
+        return (
+            "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+            "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)",
+            [expression[1]],
+        )
+    if operator == "not":
+        clause, params = compile_tag_expression(expression[1])
+        return f"NOT ({clause})", params
+    if operator in {"and", "or"}:
+        left, left_params = compile_tag_expression(expression[1])
+        right, right_params = compile_tag_expression(expression[2])
+        return f"({left} {operator.upper()} {right})", left_params + right_params
+    raise ValueError(f"Unknown filter operator: {operator}")
 
 # ------------------ Routes ------------------
 def require_json() -> Dict[str, Any]:
@@ -235,7 +267,7 @@ def health():
     return jsonify({"status": "ok", "time": datetime.now(timezone.utc).astimezone(timezone.utc).isoformat()})
 
 def get_children(tag):
-    children = [x['name'] for x in STORE_TAGS.find_eq('parent', tag)]
+    children = [x['name'] for x in STORE.select_tags("parent = ?", (tag,))]
     for c in children:
         children += get_children(c)
     return children
@@ -250,7 +282,8 @@ def api_filter_notes():
     except ValueError as error:
         return jsonify({"error": {"status": 400, "message": str(error)}}), 400
 
-    notes = STORE_NOTES.find_by_tag_expression(expression)
+    where, params = compile_tag_expression(expression)
+    notes = STORE.select_notes(where, tuple(params))
     return jsonify(notes)
 
 @app.post("/api/images")
@@ -312,20 +345,26 @@ def api_get_tagged_notes(category, anonTag):
             datetime.strptime(anonTag, "%Y-%m-%d")
         except ValueError:
             return jsonify({"error": "Invalid date format, expected YYYY-MM-DD"}), 400
-        return jsonify(STORE_NOTES.find_eq('date', anonTag))
+        return jsonify(STORE.select_notes("date = ?", (anonTag,)))
     if category not in CATEGORIES:
         return jsonify({"error": "Invalid category"}), 400
     tag = CATEGORIES[category] + anonTag
     children = set(get_children(tag))
-    notes = STORE_NOTES.find_in_list('tags', tag)
-    for c in list(children):
-        notes += STORE_NOTES.find_in_list('tags', c)
-    logger.info(notes)
-    notes = {item['id']: item for item in notes}
-    notes = list(notes.values())
-    notes = sorted(notes, key=lambda x: (x["date"], x["timestamp"]))
-
+    tag_names = [tag] + list(children)
+    placeholders = ", ".join("?" for _ in tag_names)
+    notes = STORE.select_notes(
+        "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+        f"WHERE filter_tags.note_id = n.id AND filter_tags.tag_name IN ({placeholders}))",
+        tuple(tag_names),
+    )
     return jsonify(notes)
+
+@app.route("/api/notes/<note_id>", methods=["GET"])
+def api_get_note(note_id):
+    note = STORE.get_note(note_id)
+    if not note:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(note)
 
 @app.route("/api/notes", methods=["POST"])
 def api_add_note():
@@ -335,38 +374,49 @@ def api_add_note():
     assignments = parse_tag_property_syntax(data["text"])
     if assignments:
         tag, key, value = assignments[0]
-        STORE_TAGS.set_tag_properties(tag, [{"key": key, "value": value}], replace=False)
+        STORE.set_tag_properties(tag, [{"key": key, "value": value}], replace=False)
         return jsonify({"status": "property_saved", "kind": "tag_property", "note": None,
-                        "tag": tag, "properties": STORE_TAGS.get_tag_properties(tag)})
+                        "tag": tag, "properties": STORE.get_tag_properties(tag)})
     tags = find_tag_in_text(data["text"])
     priority, duedate, cleaned_text = extract_task_priority(data["text"])
+    parent_id, cleaned_text = extract_reply_reference(cleaned_text)
+
+    note_id = uuid.uuid4().hex[-SHORT_NOTE_ID_LENGTH:]
+    while STORE.get_note(note_id) is not None:
+        note_id = uuid.uuid4().hex[-SHORT_NOTE_ID_LENGTH:]
 
     note = {
-        "id": str(uuid.uuid4()),
+        "id": note_id,
         "timestamp": int(time.time() * 1000),
         "date": data.get("date") or datetime.now().date().isoformat(),
         "text": cleaned_text,
         "task": priority,
         "tags": tags,
-        "duedate": duedate
+        "duedate": duedate,
+        "replied_to": parent_id,
     }
-    STORE_NOTES.add(note)
+    STORE.add_note(note)
+    if parent_id:
+        STORE.patch_note(parent_id, {"reply": note["id"]})
 
     # Process regular tags
     for tag in tags:
-        if STORE_TAGS.find_by_id(tag) is None:
-            STORE_TAGS.add({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None})
+        if STORE.get_tag(tag) is None:
+            STORE.add_tag({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None})
     return jsonify({"status": "created", "note": note}), 201
 
 @app.route("/api/notes/<note_id>", methods=["DELETE"])
 def api_delete_note(note_id):
-    note = STORE_NOTES.delete(note_id)
+    note = STORE.delete_note(note_id)
     removed_tags = []
     for tag in note['tags']:
-        tag_record = STORE_TAGS.find_by_id(tag)
-        if not STORE_NOTES.find_in_list('tags', tag) and tag_record and tag_record.get('content', '') == '':
+        tag_record = STORE.get_tag(tag)
+        if not STORE.select_notes(
+            "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+            "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)", (tag,), limit=1,
+        ) and tag_record and tag_record.get('content', '') == '':
             removed_tags.append(tag)
-            STORE_TAGS.delete(tag)
+            STORE.delete_tag(tag)
     return jsonify({"status": "deleted", "removed_tags": removed_tags})
 
 @app.route("/api/notes/<note_id>", methods=["PATCH"])
@@ -374,35 +424,42 @@ def api_patch_note(note_id):
     data = request.get_json()
     if not data or "text" not in data:
         return jsonify({"error": "Missing text"}), 400
-    note = STORE_NOTES.find_by_id(note_id)
+    note = STORE.get_note(note_id)
     if not note:
         return jsonify({"error": "Not found"}), 404
 
     priority, duedate, cleaned_text = extract_task_priority(data["text"])
+    parent_id, cleaned_text = extract_reply_reference(cleaned_text)
     logger.info('priority')
     logger.info(priority)
     logger.info('duedate')
     logger.info(duedate)
     note["task"] = priority
     note['duedate'] = duedate
+    note["replied_to"] = parent_id
 
     old_text = note["text"]
     old_tags = note["tags"]
     note["text"] = cleaned_text
     note["tags"] = find_tag_in_text(cleaned_text)
     note['date'] = data.get("date", note['date'])
-    STORE_NOTES.patch(note_id, note)
+    STORE.patch_note(note_id, note)
+    if parent_id:
+        STORE.patch_note(parent_id, {"reply": note_id})
 
     added_tags, removed_tags = compare_tags(old_tags, note["tags"])
     logger.info(f"Added tags: {added_tags}, Removed tags: {removed_tags}")
     any_new_tag = []
     for tag in added_tags:
-        if STORE_TAGS.find_by_id(tag) is None:
-            any_new_tag.append(STORE_TAGS.add({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None}))
+        if STORE.get_tag(tag) is None:
+            any_new_tag.append(STORE.add_tag({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None}))
     any_removed_tag = []
     for tag in removed_tags:
-        if len(STORE_NOTES.find_in_list('tags', tag)) == 0 and STORE_TAGS.find_by_id(tag)['content'] == '':
-            any_removed_tag.append(STORE_TAGS.delete(tag))
+        if not STORE.select_notes(
+            "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+            "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)", (tag,), limit=1,
+        ) and STORE.get_tag(tag)['content'] == '':
+            any_removed_tag.append(STORE.delete_tag(tag))
     return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
 
 @app.route("/api/notes/<year>/<month>/count", methods=["GET"])
@@ -418,7 +475,7 @@ def api_get_note_counts(year, month):
     from calendar import monthrange
     days_in_month = monthrange(year, month)[1]
     date_counts = {f"{year}-{month:02d}-{day:02d}": 0 for day in range(1, days_in_month + 1)}
-    date_counts.update(STORE_NOTES.count_by_date_range(
+    date_counts.update(STORE.count_notes_by_date(
         f"{year}-{month:02d}-01",
         f"{year}-{month:02d}-{days_in_month:02d}",
     ))
@@ -426,10 +483,10 @@ def api_get_note_counts(year, month):
 
 @app.route("/api/tags", methods=["GET"])
 def api_get_tags():
-    tags = STORE_TAGS.find_all()
+    tags = STORE.select_tags()
     # Add property count information to each tag
     for tag in tags:
-        tag['properties'] = STORE_TAGS.get_tag_properties(tag['name'])
+        tag['properties'] = STORE.get_tag_properties(tag['name'])
         tag['property_count'] = len(tag['properties'])
     a = jsonify(tags)
     logger.info(a)
@@ -437,7 +494,7 @@ def api_get_tags():
 
 @app.route("/api/tasks", methods=["GET"])
 def api_get_tasks():
-    filtered_notes = STORE_NOTES.find_any('task', ['low', 'mid', 'high'])
+    filtered_notes = STORE.select_notes("task IN ('low', 'mid', 'high')")
     logger.info(f"api_get_tasks: Filtering notes for tasks, found {len(filtered_notes)} notes")
     return jsonify(filtered_notes)
 
@@ -465,11 +522,14 @@ def api_patch_tag_tree(category, anonTag):
     if not patch_data:
         return jsonify({"error": "No valid fields to update"}), 400
 
-    ret = STORE_TAGS.patch(tag, patch_data)
+    ret = STORE.patch_tag(tag, patch_data)
     if 'rename' in data and data['rename'] != tag:
         logger.info("renaming tag %s %s", tag, data["rename"])
-        notes = STORE_NOTES.find_in_list('tags', tag)
-        STORE_TAGS.re_id(tag, data['rename'])
+        notes = STORE.select_notes(
+            "EXISTS (SELECT 1 FROM note_tags AS filter_tags "
+            "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)", (tag,),
+        )
+        STORE.rename_tag(tag, data['rename'])
         for note in notes:
             note['text'] = note['text'].replace(tag, data['rename'])
             newtags = []
@@ -479,10 +539,10 @@ def api_patch_tag_tree(category, anonTag):
                 else:
                     newtags.append(item)
             note['tags'] = newtags
-            STORE_NOTES.patch(note['id'], note)
-        tags = STORE_TAGS.find_eq('parent', tag)
+            STORE.patch_note(note['id'], note)
+        tags = STORE.select_tags("parent = ?", (tag,))
         for t in tags:
-            STORE_TAGS.patch(t['name'], {'parent': data['rename']})
+            STORE.patch_tag(t['name'], {'parent': data['rename']})
         ret['name'] = data['rename']
     return jsonify(ret)
 
@@ -494,9 +554,9 @@ def property_tag(category, anonTag):
 @app.route("/api/tags/<category>/<anonTag>/properties", methods=["GET"])
 def api_get_tag_properties(category, anonTag):
     tag = property_tag(category, anonTag)
-    if STORE_TAGS.find_by_id(tag) is None:
+    if STORE.get_tag(tag) is None:
         return json_error(404, "Tag not found")
-    return jsonify({"tag": tag, "properties": STORE_TAGS.get_tag_properties(tag)})
+    return jsonify({"tag": tag, "properties": STORE.get_tag_properties(tag)})
 
 @app.route("/api/tags/<category>/<anonTag>/properties", methods=["POST", "PUT", "PATCH"])
 def api_set_tag_properties(category, anonTag):
@@ -504,11 +564,11 @@ def api_set_tag_properties(category, anonTag):
     tag = property_tag(category, anonTag)
     data = require_json()
     try:
-        STORE_TAGS.set_tag_properties(tag, data.get("properties"), replace=request.method != "PATCH")
+        STORE.set_tag_properties(tag, data.get("properties"), replace=request.method != "PATCH")
     except ValueError as error:
         return json_error(400, str(error))
     return jsonify({"success": True, "status": "property_saved", "kind": "tag_property",
-                    "note": None, "tag": tag, "properties": STORE_TAGS.get_tag_properties(tag)})
+                    "note": None, "tag": tag, "properties": STORE.get_tag_properties(tag)})
 
 # ---------------------------
 # Dev entrypoint
