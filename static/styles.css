@@ -16,6 +16,9 @@ body {
   background: linear-gradient(125deg, #f6f9f7 0%, #eaf1ec 100%);
   color: var(--ink);
 }
+p {
+  margin: 2px 0px 2px 0px
+}
 
 /* Layout */
 #app {
@@ -132,15 +135,15 @@ body {
   height: 100%;
   scrollbar-width: thin;
   scrollbar-color: #bccbc2 transparent;
-  gap: 12px;
+  /*gap: 12px;*/
   background: transparent;
-  padding: 14px;
+  /* padding: 14px; */
 }
 
 .column {
   flex: 0 0 320px;         /* fixed width, adjust as you like */
-  min-width: 300px;        /* ensure a minimum */
-  max-width: 620px;        /* optional: prevent them from being too wide */
+  min-width: 500px;        /* ensure a minimum */
+  max-width: 800px;        /* optional: prevent them from being too wide */
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -153,7 +156,7 @@ body {
   padding: 0px;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  /*border-radius: 7px;*/
   background: var(--paper);
   box-shadow: 0 4px 16px rgba(34, 62, 47, 0.07);
   animation: column-arrive 180ms ease-out both;
@@ -472,7 +475,28 @@ body {
 .tagList-tree li.expanded > ul {
   display: block;
 }
+.tagList-tree .tagtree-box {
+  display: flex;
+  align-items: center;
+  padding: 2px 4px;
+  background: var(--paper);
+  border-width: 2px;
+  border-style: solid;
+}
+.tagList-tree .tagtree-box.Events {border-color: var(--c-event);}
+.tagList-tree .tagtree-box.Projects {border-color: var(--c-project);}
+.tagList-tree .tagtree-box.Generic {border-color: var(--c-generic);}
+.tagList-tree .tagtree-box.Persons {border-color: var(--c-person);}
 
+.tagList-tree .tagtree-box.Events .tagtree-text {color: var(--c-event); }
+.tagList-tree .tagtree-box.Projects .tagtree-text {color: var(--c-project); }
+.tagList-tree .tagtree-box.Generic .tagtree-text {color: var(--c-generic); }
+.tagList-tree .tagtree-box.Persons .tagtree-text {color: var(--c-person); }
+
+.tagList-tree .tagtree-box.Events .caret-icon {color: var(--c-event);}
+.tagList-tree .tagtree-box.Projects .caret-icon {color: var(--c-project);}
+.tagList-tree .tagtree-box.Generic .caret-icon {color: var(--c-generic);}
+.tagList-tree .tagtree-box.Persons .caret-icon {color: var(--c-person);}
 
 #TagsBoxSubHeader {
   margin: 0 0 8px;
@@ -781,18 +805,8 @@ select:focus-visible,
 
 #TagsBox .tagList-tree li > div {
   min-height: 32px;
-  border-width: 1px !important;
-  border-radius: 5px !important;
+  border-width: 2px !important;
 }
-
-#TagsBox .color-green-5 { color: #286b56; }
-#TagsBox .color-border-green-5 { border-color: #a5c6b4; }
-#TagsBox .color-blue-5 { color: #366f91; }
-#TagsBox .color-border-blue-5 { border-color: #aac7d8; }
-#TagsBox .color-purple-5 { color: #a65d47; }
-#TagsBox .color-border-purple-5 { border-color: #dfb5a6; }
-#TagsBox .color-orange-5 { color: #a36e16; }
-#TagsBox .color-border-orange-5 { border-color: #e1cb94; }
 
 #TagsBox .tagList-task {
     margin: 2px 0 2px 8px;
@@ -853,8 +867,8 @@ select:focus-visible,
 #EditorWrap {
   align-items: stretch;
   gap: 10px;
-  padding: 10px 14px 14px;
-  border-top: 1px solid var(--border);
+  /*padding: 10px 14px 14px;*/
+  border-top: 3px solid var(--border);
   background: #f7faf8;
   flex-direction: row;
   display: flex;
@@ -874,13 +888,103 @@ select:focus-visible,
   max-height: 300px;
   padding: 12px;
   border: 1px solid var(--border);
-  border-radius: 6px;
   background: white;
   color: var(--ink);
   font-family: var(--font-body);
   font-size: 0.95rem;
   line-height: 1.5;
   outline: none;
+}
+#Editor.journote-code-editor {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 140px;
+  min-height: 120px;
+  max-height: 1000px;
+  padding: 0;
+  border: 3px solid #465265;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+#EditorWrap .editor-field {
+  min-width: 0;
+}
+
+#Editor.journote-code-editor {
+  display: block;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  height: 140px;
+  min-height: 120px;
+  max-height: 300px;
+  padding: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--border, #d8e2dc);
+  border-radius: 6px;
+  background: var(--paper, #ffffff);
+  color: var(--ink, #25332d);
+  outline: none;
+  box-shadow: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+#Editor.journote-code-editor:focus-within {
+  border-color: #86ad96;
+  box-shadow: 0 0 0 3px rgba(40, 107, 86, 0.12);
+}
+
+#Editor.journote-code-editor .monaco-editor {
+  outline: none;
+}
+
+#Editor .jn-project {
+  color: var(--c-project) !important;
+  background-color: var(--c-project-l);
+  border-radius: 3px;
+}
+
+#Editor .jn-event {
+  color: var(--c-event) !important;
+  background-color: var(--c-event-l);
+  border-radius: 3px;
+}
+
+#Editor .jn-generic {
+  color:var(--c-generic) !important;
+  background-color: var(--c-generic-l);
+  border-radius: 3px;
+}
+
+#Editor .jn-person {
+  color: var(--c-person) !important;
+  background-color: var(--c-person-l);
+  border-radius: 3px;
+}
+
+#EditorWrap .editor-hint {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-family: var(--font-body, monospace);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  opacity: 1;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #Editor.journote-code-editor {
+    transition: none;
+  }
+}
+#EditorWrap .editor-field { min-width: 0; }
+#EditorWrap .editor-hint {
+  font-size: 12px;
+  opacity: .75;
+  margin: 5px 0;
 }
 
 .editor-status {
@@ -900,8 +1004,10 @@ select:focus-visible,
 
 #EditorCtrl {
   height: auto;
-  flex-direction: row;
-  align-items: center;
+  gap: 3px;
+  display: flex;
+  flex-direction: column;
+  flex-grow: unset;
 }
 
 #EditorCtrl .btn {
@@ -924,6 +1030,37 @@ select:focus-visible,
 #EditorCtrl .btn:disabled {
   cursor: wait;
   opacity: 0.55;
+}
+
+.editor-field.editor-maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 1500;
+  padding: 16px;
+  background: var(--paper);
+  overflow-y: auto;
+}
+
+.editor-field.editor-maximized #Editor {
+  max-height: none;
+  height: calc(100vh - 220px);
+}
+
+.editor-field.editor-maximized .journote-code-editor {
+  max-height: none;
+  height: calc(100vh - 220px);
+}
+
+.editor-minimize-btn {
+  display: none;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1501;
+}
+
+.editor-field.editor-maximized .editor-minimize-btn {
+  display: inline-block;
 }
 
 .calendar-extras {

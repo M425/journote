@@ -1,14 +1,146 @@
-// main js file (updated: added Calendar page)
-const eid = (el) => document.getElementById(el);
-const escapeHTML = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
-  '&': '&amp;',
-  '<': '&lt;',
-  '>': '&gt;',
-  '"': '&quot;',
-  "'": '&#39;'
-}[character]));
+// Monaco integration for the existing plain-script application.
+// Optional, before this file: window.JOURNOTE_MONACO_VS = '/vendor/monaco/min/vs';
+// The default is pinned because this standalone integration uses Monaco's AMD build.
+const journoteEditor = {
+  load() {
+    if (window.monaco?.editor) return Promise.resolve(window.monaco);
+    if (this.loading) return this.loading;
+    this.loading = new Promise((resolve, reject) => {
+      const vs = (
+        window.JOURNOTE_MONACO_VS ||
+        'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs'
+      ).replace(/\/$/, '');
 
-const renderMarkdown = (text) => {
+      if (!window.MonacoEnvironment) {
+        const worker = new Blob([
+          `self.MonacoEnvironment={baseUrl:${JSON.stringify(vs + '/')}};importScripts(${JSON.stringify(vs + '/base/worker/workerMain.js')});`
+        ], {type: 'text/javascript'});
+        const workerUrl = URL.createObjectURL(worker);
+        window.MonacoEnvironment = {getWorkerUrl: () => workerUrl};
+        window.addEventListener('pagehide', event => {
+          if (!event.persisted) URL.revokeObjectURL(workerUrl);
+        }, {once: true});
+      }
+
+      const timer = setTimeout(
+        () => reject(new Error('Timeout caricamento Monaco')),
+        20000
+      );
+      const fail = error => {
+        clearTimeout(timer);
+        reject(error);
+      };
+      const start = () => {
+        try {
+          window.require.config({paths: {vs}});
+          window.require(['vs/editor/editor.main'], () => {
+            clearTimeout(timer);
+            resolve(window.monaco);
+          }, fail);
+        } catch (error) {
+          fail(error);
+        }
+      };
+
+      if (window.require?.config) {
+        start();
+      } else {
+        const script = document.createElement('script');
+        script.src = `${vs}/loader.js`;
+        script.onload = start;
+        script.onerror = () => fail(
+          new Error('Monaco non disponibile; editor semplice attivo')
+        );
+        document.head.appendChild(script);
+      }
+    });
+    return this.loading;
+  },
+
+  installStyles(monaco) {
+    if (document.getElementById('journote-monaco-style')) return;
+
+    monaco.editor.defineTheme('journote-markdown', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        {token: 'keyword', foreground: '82B1FF', fontStyle: 'bold'},
+        {token: 'strong', fontStyle: 'bold'},
+        {token: 'emphasis', fontStyle: 'italic'}
+      ],
+      colors: {
+        'editor.background': '#18202b',
+        'editor.foreground': '#e0e6ee'
+      }
+    });
+  },
+
+  // Preserve the textarea interface used by the existing application.
+  adapter(editor, host, monaco) {
+    const model = editor.getModel();
+    return {
+      style: host.style,
+      get value() {
+        return model.getValue();
+      },
+      set value(value) {
+        editor.setValue(String(value ?? ''));
+      },
+      get selectionStart() {
+        return model.getOffsetAt(editor.getSelection().getStartPosition());
+      },
+      get selectionEnd() {
+        return model.getOffsetAt(editor.getSelection().getEndPosition());
+      },
+      focus() {
+        editor.focus();
+      },
+      setSelectionRange(start, end) {
+        const a = model.getPositionAt(start);
+        const b = model.getPositionAt(end);
+        editor.setSelection(
+          new monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)
+        );
+        editor.revealPositionInCenterIfOutsideViewport(b);
+      },
+      setRangeText(text, start, end, mode = 'preserve') {
+        const a = model.getPositionAt(start);
+        const b = model.getPositionAt(end);
+        editor.pushUndoStop();
+        editor.executeEdits('journote.replace', [{
+          range: new monaco.Range(
+            a.lineNumber, a.column, b.lineNumber, b.column
+          ),
+          text,
+          forceMoveMarkers: true
+        }]);
+
+        if (mode === 'end') {
+          this.setSelectionRange(start + text.length, start + text.length);
+        } else if (mode === 'select') {
+          this.setSelectionRange(start, start + text.length);
+        }
+        // Without an explicit cursor state Monaco tracks existing selections.
+        editor.pushUndoStop();
+      }
+    };
+  }
+};
+
+const eid = el => document.getElementById(el);
+
+const escapeHTML = value => String(value ?? '').replace(
+  /[&<>"']/g,
+  character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[character])
+);
+
+const renderMarkdown = text => {
   if (!text) return '';
   const converter = new showdown.Converter({
     tables: true,
@@ -23,24 +155,28 @@ const renderMarkdown = (text) => {
     smartIndentationFix: true,
     simpleLineBreaks: true
   });
-  // Process #tag[key] syntax
-  const processedText = text.replace(/#([A-Za-z0-9_.-]+)\[([^\]]+)\]/g, (match, tagName, key) => {
-    // Find the tag in our model
-    const tag = (model.get('tags') || []).find(t => t.name === `#${tagName}`);
-    if (tag && Array.isArray(tag.properties)) {
-      // Extract the property value
-      const propertyValue = tag.properties.find(property => property.key === key)?.value;
-      if (propertyValue !== undefined) {
-        return `<span class="tag-property-reference">${escapeHTML(propertyValue)}</span>`;
+
+  const processedText = text.replace(
+    /#([A-Za-z0-9_.-]+)\[([^\]]+)\]/g,
+    (match, tagName, key) => {
+      const tag = (model.get('tags') || []).find(
+        t => t.name === `#${tagName}`
+      );
+      if (tag && Array.isArray(tag.properties)) {
+        const propertyValue = tag.properties.find(
+          property => property.key === key
+        )?.value;
+        if (propertyValue !== undefined) {
+          return `<span class="tag-property-reference">${escapeHTML(propertyValue)}</span>`;
+        }
       }
+      return match;
     }
-    // If we can't find the tag or property, return the original text
-    return match;
-  });
+  );
   return converter.makeHtml(processedText);
 };
 
-const sanitizeRenderedMarkdown = (root) => {
+const sanitizeRenderedMarkdown = root => {
   for (const element of root.querySelectorAll('a[href], img[src]')) {
     const attribute = element.tagName === 'IMG' ? 'src' : 'href';
     try {
@@ -55,20 +191,23 @@ const sanitizeRenderedMarkdown = (root) => {
   }
 };
 
-// Helper function to process #tag[key] syntax in text areas
-const processTagSyntaxInTextArea = (text) => {
+const processTagSyntaxInTextArea = text => {
   if (!text) return text;
-  // Replace #tag[key] with the actual tag content
-  return text.replace(/#([A-Za-z0-9_.-]+)\[([^\]]+)\]/g, (match, tagName, key) => {
-    // Find the tag in our model
-    const tag = (model.get('tags') || []).find(t => t.name === `#${tagName}`);
-    if (tag && Array.isArray(tag.properties)) {
-      // Extract the property value
-      const propertyValue = tag.properties.find(property => property.key === key)?.value;
-      return propertyValue ?? match; // Return the property value or original if not found
+  return text.replace(
+    /#([A-Za-z0-9_.-]+)\[([^\]]+)\]/g,
+    (match, tagName, key) => {
+      const tag = (model.get('tags') || []).find(
+        t => t.name === `#${tagName}`
+      );
+      if (tag && Array.isArray(tag.properties)) {
+        const propertyValue = tag.properties.find(
+          property => property.key === key
+        )?.value;
+        return propertyValue ?? match;
+      }
+      return match;
     }
-    return match; // Return original if tag not found
-  });
+  );
 };
 
 // HELPER
@@ -88,14 +227,14 @@ const helper = {
     if (tag.startsWith('+')) return tag.substring(1);
     return tag;
   },
-  extractTagsFromText(text, trailing_space=true) {
+  extractTagsFromText(text, trailing_space = true) {
     const tagsfound = new Set();
     let tagRx = /(?<=^|\s)([#@>\+])([A-Za-z0-9_\-\.]+)[ ,\.;:]/g;
     if (!trailing_space) {
       tagRx = /([#@>\+])([A-Za-z0-9_\-\.]+)/g;
     }
     let m;
-    while((m = tagRx.exec(text)) !== null) {
+    while ((m = tagRx.exec(text)) !== null) {
       tagsfound.add(m[0].trim());
     }
     return Array.from(tagsfound);
@@ -103,26 +242,30 @@ const helper = {
   diffToToday(date1) {
     const date2 = new Date();
     const diffTime = date2 - date1;
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)); 
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     return diffDays;
   }
-}
+};
 
 // API
 const api = {
-  async api(url, opts = {}){
-    console.log('[fn] api ' + url)
+  async api(url, opts = {}) {
+    console.log('[fn] api ' + url);
     opts.headers = opts.headers || {};
-    if (opts.body && typeof FormData !== 'undefined' && opts.body instanceof FormData) {
+    if (
+      opts.body &&
+      typeof FormData !== 'undefined' &&
+      opts.body instanceof FormData
+    ) {
       delete opts.headers['Content-Type'];
-    } else if (opts.body && typeof opts.body !== "string") {
-      opts.headers["Content-Type"] = "application/json";
+    } else if (opts.body && typeof opts.body !== 'string') {
+      opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(opts.body);
     }
     const res = await fetch(url, opts);
-    console.debug("[fn] api " + url + " executed", res.status);
+    console.debug('[fn] api ' + url + ' executed', res.status);
     if (!res.ok) {
-      const err = await res.json().catch(()=>({}));
+      const err = await res.json().catch(() => ({}));
       throw new Error(err.error?.message || res.statusText);
     }
     if (res.status !== 204) {
@@ -130,13 +273,13 @@ const api = {
     }
     return null;
   },
-  async loadNotes(tag){
+  async loadNotes(tag) {
     console.log('[fn] loadNotes', tag);
     const category = helper.getClassfromTag(tag);
     const anonTag = helper.getAnonymizedTag(tag);
     const notes = await api.api(`/api/notes/${category}/${anonTag}`);
     return notes;
-  },
+  }
 };
 
 // MODEL
@@ -157,61 +300,88 @@ const model = {
     console.debug('model get: ' + el, this[el]._v);
     return this[el]._v;
   },
-
-  tags: { _v: null, subs: ['TagsBoxList'], async reload() {
-    this._v = await api.api("/api/tags");
-    this._v.sort((a, b) => {
-      const nameA = a.name.toUpperCase(); // ignore upper and lowercase
-      const nameB = b.name.toUpperCase(); // ignore upper and lowercase
-      if (nameA < nameB) return -1;
-      if (nameA > nameB) return 1;
-      return 0;
-    });
-  } },
-  // added 'Calendar' as subscriber so calendar view refreshes when tasks reload
-  tasks: { _v: null, subs: ['TagsBoxList','Calendar'], async reload() {
-    this._v = await api.api("/api/tasks");
-    const tags = model.get('tags');
-    this._v.forEach( t => {
-      t.firstTag = null
-      for (const tag of t.tags) {
-        const compareTag = tags.find(v => v.name === tag);
-        if (["Projects", "Generic", "Events"].includes(compareTag.category) && compareTag.parent == null) {
-          t.firstTag = tag;
+  tags: {
+    _v: null,
+    subs: ['TagsBoxList'],
+    async reload() {
+      this._v = await api.api('/api/tags');
+      this._v.sort((a, b) => {
+        const nameA = a.name.toUpperCase();
+        const nameB = b.name.toUpperCase();
+        if (nameA < nameB) return -1;
+        if (nameA > nameB) return 1;
+        return 0;
+      });
+    }
+  },
+  tasks: {
+    _v: null,
+    subs: ['TagsBoxList', 'Calendar'],
+    async reload() {
+      this._v = await api.api('/api/tasks');
+      const tags = model.get('tags');
+      this._v.forEach(t => {
+        t.firstTag = null;
+        for (const tag of t.tags) {
+          const compareTag = tags.find(v => v.name === tag);
+          if (
+            ['Projects', 'Generic', 'Events'].includes(compareTag.category) &&
+            compareTag.parent == null
+          ) {
+            t.firstTag = tag;
+          }
+          if (
+            ['Projects', 'Generic', 'Events'].includes(compareTag.category) &&
+            compareTag.parent != null
+          ) {
+            t.firstTag = tag;
+          }
         }
-        if (["Projects", "Generic", "Events"].includes(compareTag.category) && compareTag.parent != null) {
-          t.firstTag = tag;
-        }
-      }
-      return t;
-    })
-  }},
-  tagsBox_projects: { _v: false, subs: ['TagsBoxList'] },
-  tagsBox_task: { _v: true, subs: ['TagsBoxList'] },
-  tagsBox_events: { _v: false, subs: ['TagsBoxList'] },
-  tagsBox_persons: { _v: false, subs: ['TagsBoxList'] },
-  tagsBox_generic: { _v: false, subs: ['TagsBoxList'] },
-  tagsVisible: { _v: [], subs: [] },
-  tagsActive: { _v: [], subs: [] },
-  leftBarVisible: { _v: true, subs: ['LeftBar'] }
+        return t;
+      });
+    }
+  },
+  tagsBox_projects: {_v: false, subs: ['TagsBoxList']},
+  tagsBox_task: {_v: true, subs: ['TagsBoxList']},
+  tagsBox_events: {_v: false, subs: ['TagsBoxList']},
+  tagsBox_persons: {_v: false, subs: ['TagsBoxList']},
+  tagsBox_generic: {_v: false, subs: ['TagsBoxList']},
+  tagsVisible: {_v: [], subs: []},
+  tagsActive: {_v: [], subs: []},
+  leftBarVisible: {_v: true, subs: ['LeftBar']}
 };
 
 // BUSINESS LOGIC LAYER
 const businessLogic = {
-  // Handle note operations
   async saveNote(raw, tdate) {
     if (!raw.trim()) return null;
-    const assignment = raw.trim().match(/^(#[A-Za-z0-9_.-]+)\[([^\[\]\r\n]+)\][ \t]+(\S[\s\S]*)$/);
+    const assignment = raw.trim().match(
+      /^(#[A-Za-z0-9_.-]+)\[([^\[\]\r\n]+)\][ \t]+(\S[\s\S]*)$/
+    );
     if (assignment && assignment[2].trim()) {
-      return api.api(`/api/tags/Projects/${encodeURIComponent(assignment[1].slice(1))}/properties`, {
-        method: 'PATCH',
-        body: {properties: [{key: assignment[2].trim(), value: assignment[3].trim()}]}
-      });
+      return api.api(
+        `/api/tags/Projects/${encodeURIComponent(assignment[1].slice(1))}/properties`,
+        {
+          method: 'PATCH',
+          body: {
+            properties: [{
+              key: assignment[2].trim(),
+              value: assignment[3].trim()
+            }]
+          }
+        }
+      );
     }
     const response = await api.api('/api/notes', {
-      method: 'POST', body: {text: raw, date: tdate || new Date().toISOString().slice(0, 10)}
+      method: 'POST',
+      body: {
+        text: raw,
+        date: tdate || new Date().toISOString().slice(0, 10)
+      }
     });
-    if (!response?.note?.id && response?.kind !== 'tag_property') throw new Error('Error saving note');
+    if (!response?.note?.id && response?.kind !== 'tag_property') {
+      throw new Error('Error saving note');
+    }
     return response;
   },
 
@@ -223,14 +393,13 @@ const businessLogic = {
         date: note.date
       }
     });
-    if(!response || !response.note.id) {
+    if (!response || !response.note.id) {
       alert('Error saving note');
       return;
     }
     return response.note;
   },
-  
-  // Handle tag operations
+
   getTagCategory(tag) {
     if (tag.startsWith('#')) return 'Projects';
     if (tag.startsWith('@')) return 'Persons';
@@ -239,7 +408,7 @@ const businessLogic = {
     if (/^\d{4}-\d{2}-\d{2}$/.test(tag)) return 'Journal';
     return 'FullText';
   },
-  
+
   getAnonymizedTag(tag) {
     if (tag.startsWith('#')) return tag.substring(1);
     if (tag.startsWith('@')) return tag.substring(1);
@@ -247,54 +416,55 @@ const businessLogic = {
     if (tag.startsWith('+')) return tag.substring(1);
     return tag;
   },
-  
-  // Handle task operations
+
   getTaskPriority(task) {
-    // Return priority level based on task value
     if (!task || !task.task) return 'low';
     return task.task;
   },
-  
-  // Handle tag tree operations
+
   buildTagTree(tags, tasks) {
     const tree = [];
     const childrenOf = {};
     tags.forEach(tag => {
-      childrenOf[tag.name] = { ...tag, tasks: [], children: [] };
+      childrenOf[tag.name] = {...tag, tasks: [], children: []};
     });
     tags.forEach(tag => {
-      if (!tag.parent || tag.parent === '')
+      if (!tag.parent || tag.parent === '') {
         tree.push(childrenOf[tag.name]);
-      if (tag.parent && childrenOf[tag.parent])
+      }
+      if (tag.parent && childrenOf[tag.parent]) {
         childrenOf[tag.parent].children.push(childrenOf[tag.name]);
+      }
     });
     tasks.forEach(task => {
       if (task.firstTag != null && task.firstTag != '') {
         childrenOf[task.firstTag].tasks.push(task);
       }
-    })
+    });
     return tree;
   },
-  
-  // Handle calendar operations
+
   getCalendarDays(year, month) {
     const firstDay = new Date(year, month, 1).getDay();
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     return {
-      firstDay: (firstDay === 0) ? 6 : firstDay - 1,
+      firstDay: firstDay === 0 ? 6 : firstDay - 1,
       daysInMonth
     };
   },
-  
-  // Handle action required operations
+
   getNewTags(text, existingTags = model.get('tags') || []) {
     const existingTagNames = new Set(existingTags.map(tag => tag.name));
-    return helper.extractTagsFromText(text, false).filter(tag => !existingTagNames.has(tag));
+    return helper.extractTagsFromText(text, false).filter(
+      tag => !existingTagNames.has(tag)
+    );
   },
 
   getActionRequiredItems() {
     try {
-      return JSON.parse(localStorage.getItem('journoteActionRequiredTags') || '[]');
+      return JSON.parse(
+        localStorage.getItem('journoteActionRequiredTags') || '[]'
+      );
     } catch (error) {
       console.error('Error reading action required tags:', error);
       return [];
@@ -304,12 +474,20 @@ const businessLogic = {
   addActionRequiredTags(tags) {
     const pendingTags = new Set(this.getActionRequiredItems());
     tags.forEach(tag => pendingTags.add(tag));
-    localStorage.setItem('journoteActionRequiredTags', JSON.stringify([...pendingTags]));
+    localStorage.setItem(
+      'journoteActionRequiredTags',
+      JSON.stringify([...pendingTags])
+    );
   },
 
   completeActionRequiredTag(tag) {
-    const pendingTags = this.getActionRequiredItems().filter(item => item !== tag);
-    localStorage.setItem('journoteActionRequiredTags', JSON.stringify(pendingTags));
+    const pendingTags = this.getActionRequiredItems().filter(
+      item => item !== tag
+    );
+    localStorage.setItem(
+      'journoteActionRequiredTags',
+      JSON.stringify(pendingTags)
+    );
   }
 };
 
@@ -319,6 +497,7 @@ const page = {
     filterViews: {},
     shortcutsBound: false,
     render() {
+      view.EditorWrap.dispose();
       this.el = eid('app');
       this.el.innerHTML = '';
       this.el.appendChild(view.createEl('aside', {id: 'LeftBar'}));
@@ -329,7 +508,7 @@ const page = {
       const tagsVisible = model.get('tagsVisible');
       model.set('tagsVisible', []);
       (async () => {
-        await this.addTagview(new Date().toISOString().slice(0, 10)); 
+        await this.addTagview(new Date().toISOString().slice(0, 10));
         for (const x of tagsVisible) {
           if (this.filterViews[x]) {
             await this.addFilterview(this.filterViews[x], null, x);
@@ -338,82 +517,94 @@ const page = {
           }
         }
       })();
+
       if (!this.shortcutsBound) {
         this.shortcutsBound = true;
-        document.addEventListener('keydown', (ev) => {
+        document.addEventListener('keydown', ev => {
           if (!eid('Main')) return;
-        if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
-          /* Alt + n --> focus on editor */
-          if (ev.key.toLowerCase() === 'n') {
-            ev.preventDefault();
-            const editor = view.EditorWrap.ed;
-            editor.focus();
-            editor.setSelectionRange(editor.value.length, editor.value.length);
-          }
-          /* Alt + t --> add today's journal entry */
-          if (ev.key.toLowerCase() === 't') {
-            ev.preventDefault();
-            const today = new Date().toISOString().slice(0, 10);
-            page.home.addTagview(today);
-          }
-          /* Alt + w --> close current tab */
-          if (ev.key.toLowerCase() === 'w') {
-            ev.preventDefault();
-            page.home.removeTagview(model.get('tagsActive'));
-          }
-          /* Alt + 1..9 --> switch to tab */
-          if (!isNaN(parseInt(ev.key, 10))) {
-            ev.preventDefault();
-            let evIndex = parseInt(ev.key, 10)-1;
-            console.log('Numeric key pressed:', evIndex);
-            if (evIndex >= 0 && evIndex < model.get('tagsVisible').length) {
-              page.home.activateTagview(model.get('tagsVisible')[evIndex]);
+          if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
+            if (ev.key.toLowerCase() === 'n') {
+              ev.preventDefault();
+              const editor = view.EditorWrap.ed;
+              editor.focus();
+              editor.setSelectionRange(
+                editor.value.length,
+                editor.value.length
+              );
+            }
+
+            if (ev.key.toLowerCase() === 't') {
+              ev.preventDefault();
+              const today = new Date().toISOString().slice(0, 10);
+              page.home.addTagview(today);
+            }
+
+            if (ev.key.toLowerCase() === 'w') {
+              ev.preventDefault();
+              page.home.removeTagview(model.get('tagsActive'));
+            }
+
+            if (!isNaN(parseInt(ev.key, 10))) {
+              ev.preventDefault();
+              const evIndex = parseInt(ev.key, 10) - 1;
+              console.log('Numeric key pressed:', evIndex);
+              if (
+                evIndex >= 0 &&
+                evIndex < model.get('tagsVisible').length
+              ) {
+                page.home.activateTagview(
+                  model.get('tagsVisible')[evIndex]
+                );
+              }
+            }
+
+            if (ev.key === 'ArrowLeft') {
+              ev.preventDefault();
+              const activeTab = model.get('tagsActive');
+              const visible = model.get('tagsVisible');
+              const currentIndex = visible.findIndex(t => t === activeTab);
+              console.log(currentIndex);
+              if (currentIndex >= 1) {
+                page.home.activateTagview(
+                  model.get('tagsVisible')[currentIndex - 1]
+                );
+              }
+            }
+
+            if (ev.key === 'ArrowRight') {
+              ev.preventDefault();
+              const activeTab = model.get('tagsActive');
+              const visible = model.get('tagsVisible');
+              const currentIndex = visible.findIndex(t => t === activeTab);
+              console.log(currentIndex);
+              if (currentIndex < visible.length - 1) {
+                page.home.activateTagview(
+                  model.get('tagsVisible')[currentIndex + 1]
+                );
+              }
+            }
+
+            if (ev.key === 'ArrowUp') {
+              ev.preventDefault();
+              const activeTab = model.get('tagsActive');
+              if (activeTab) view.Main.maximizeTab(activeTab);
+            }
+
+            if (ev.key === 'ArrowDown') {
+              ev.preventDefault();
+              const activeTab = model.get('tagsActive');
+              if (activeTab) view.Main.maximizeTab(activeTab);
             }
           }
-          /* Alt + Arrow left --> swith to arrow left */
-          if (ev.key === 'ArrowLeft') {
-            ev.preventDefault();
-            const activeTab = model.get('tagsActive');
-            const tagsVisible = model.get('tagsVisible');
-            const currentIndex = tagsVisible.findIndex(t => t === activeTab);
-            console.log(currentIndex);
-            if (currentIndex >= 1) {
-              page.home.activateTagview(model.get('tagsVisible')[currentIndex - 1]);
-            }
-          }
-          /* Alt + Arrow right --> swith to arrow right */
-          if (ev.key === 'ArrowRight') {
-            ev.preventDefault();
-            const activeTab = model.get('tagsActive');
-            const tagsVisible = model.get('tagsVisible');
-            const currentIndex = tagsVisible.findIndex(t => t === activeTab);
-            console.log(currentIndex);
-            if (currentIndex < tagsVisible.length - 1) {
-              page.home.activateTagview(tagsVisible[currentIndex + 1]);
-            }
-          }
-          /* Alt + Arrow up/down --> maximize/restore current tab */
-          if(ev.key == 'ArrowUp') {
-            ev.preventDefault();
-            const activeTab = model.get('tagsActive');
-            // Maximize active tab
-            if (activeTab) view.Main.maximizeTab(activeTab);
-          }
-          /* Alt + Arrow up/down --> maximize/restore current tab */
-          if(ev.key == 'ArrowDown') {
-            ev.preventDefault();
-            const activeTab = model.get('tagsActive');
-            // Restore active tab
-            if (activeTab) view.Main.maximizeTab(activeTab);
-          }
-        }
         });
       }
     },
+
     async load() {
       await model.tags.reload();
       await model.tasks.reload();
     },
+
     async refreshMetadata() {
       await model.tags.reload();
       await model.tasks.reload();
@@ -427,24 +618,29 @@ const page = {
         view.Main.updateTab(key, notes);
       }
     },
+
     async addTagview(tag) {
       console.log('[fn] addTagview', tag);
       console.log('[fn] addTagview', model.get('tagsVisible'));
-      
       if (model.get('tagsVisible').includes(tag)) {
-          console.log('Tagview already exists');
-          page.home.activateTagview(tag);
-          return;
+        console.log('Tagview already exists');
+        page.home.activateTagview(tag);
+        return;
       }
-      const tagsVisible = model.set('tagsVisible', (tagsVisible) => { tagsVisible.push(tag); return tagsVisible;})
-
+      const tagsVisible = model.set('tagsVisible', visible => {
+        visible.push(tag);
+        return visible;
+      });
       const matched = await api.loadNotes(tag);
-
       view.TopBar.addTab(tag, matched);
       view.Main.addTab(tag, matched);
     },
+
     async focusTask(task) {
-      const panelTag = task.firstTag || task.tags?.find(tag => tag.startsWith('#')) || task.date;
+      const panelTag =
+        task.firstTag ||
+        task.tags?.find(tag => tag.startsWith('#')) ||
+        task.date;
       if (!panelTag) return;
 
       await this.addTagview(panelTag);
@@ -454,12 +650,21 @@ const page = {
         .find(item => item.dataset.key === panelTag);
       const note = Array.from(column?.querySelectorAll('.noteItem') || [])
         .find(item => item.dataset.id === String(task.id));
-      note?.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'nearest'});
+      note?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+        inline: 'nearest'
+      });
     },
+
     async addFilterview(rule, notes = null, key = null) {
       if (!eid('Main')) {
         const homeReady = new Promise(resolve => {
-          window.addEventListener('journote-home-ready', resolve, {once: true});
+          window.addEventListener(
+            'journote-home-ready',
+            resolve,
+            {once: true}
+          );
         });
         const alreadyHome = location.hash === '#/home';
         location.hash = '/home';
@@ -470,9 +675,11 @@ const page = {
         }
         await homeReady;
       }
-      const filterKey = key || `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      const filterKey =
+        key || `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.filterViews[filterKey] = rule;
-      model.set('tagsVisible', (visible) => [...visible, filterKey]);
+      model.set('tagsVisible', visible => [...visible, filterKey]);
 
       const matched = notes ?? await api.api('/api/notes/filter', {
         method: 'POST',
@@ -482,7 +689,8 @@ const page = {
       view.TopBar.addTab(filterKey, matched, label);
       view.Main.addTab(filterKey, matched, label);
     },
-    activateTagview(key){
+
+    activateTagview(key) {
       if (key == undefined) {
         model.set('tagsActive', null);
       } else {
@@ -491,24 +699,30 @@ const page = {
         view.Main.activateTab(key);
       }
     },
+
     removeTagview(tag) {
       console.log('[fn] removeTagview', tag);
-      if ((new Date().toISOString().slice(0, 10)) == tag) {
+      if (new Date().toISOString().slice(0, 10) == tag) {
         console.log('[fn] removeTagview - dont remove today', tag);
         return;
       }
       delete this.filterViews[tag];
-      const tagsVisible = model.set('tagsVisible', (tags) => tags.filter(t => t !== tag) );
-      console.log(tagsVisible)
-      view.TopBar.removeTab(tag)
-      view.Main.removeTab(tag)
+      const tagsVisible = model.set(
+        'tagsVisible',
+        tags => tags.filter(t => t !== tag)
+      );
+      console.log(tagsVisible);
+      view.TopBar.removeTab(tag);
+      view.Main.removeTab(tag);
       if (model.get('tagsActive') == tag) {
-        page.home.activateTagview(tagsVisible[tagsVisible.length-1])
+        page.home.activateTagview(tagsVisible[tagsVisible.length - 1]);
       }
     }
   },
+
   calendar: {
     render() {
+      view.EditorWrap.dispose();
       this.el = eid('app');
       this.el.innerHTML = '';
       this.el.appendChild(view.createEl('aside', {id: 'LeftBar'}));
@@ -538,50 +752,272 @@ const view = {
     }
     return e;
   },
+
   EditorWrap: {
+    dispose() {
+      this.generation = (this.generation || 0) + 1;
+      this.monacoEditor?.dispose();
+      this.monacoModel?.dispose();
+      this.monacoEditor = null;
+      this.monacoModel = null;
+    },
+
+    async upgradeEditor(generation, textarea) {
+      let editor;
+      let host;
+      try {
+        const monaco = await journoteEditor.load();
+        if (this.generation !== generation || !textarea.isConnected) return;
+
+        journoteEditor.installStyles(monaco);
+        const focused = document.activeElement === textarea;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+
+        host = view.createEl('div', {
+          className: 'journote-code-editor'
+        });
+        textarea.before(host);
+
+        const textModel = monaco.editor.createModel(
+          textarea.value,
+          'markdown'
+        );
+        this.monacoModel = textModel;
+
+        editor = monaco.editor.create(host, {
+          model: textModel,
+          theme: 'journote-markdown',
+          automaticLayout: true,
+          fontSize: 14,
+          lineHeight: 22,
+          fontFamily: 'Consolas, "Liberation Mono", monospace',
+          minimap: {enabled: false},
+          wordWrap: 'on',
+          scrollBeyondLastLine: false,
+          lineNumbers: 'off',
+          glyphMargin: false,
+          folding: false,
+          lineDecorationsWidth: 8,
+          overviewRulerLanes: 0,
+          hideCursorInOverviewRuler: true,
+          renderLineHighlight: 'none',
+          roundedSelection: true,
+          tabSize: 2,
+          insertSpaces: true,
+          detectIndentation: false,
+          multiCursorModifier: 'alt',
+          multiCursorMergeOverlapping: true,
+          quickSuggestions: false,
+          wordBasedSuggestions: 'off',
+          padding: {top: 10, bottom: 10},
+          ariaLabel: 'Testo della nota in Markdown',
+          scrollbar: {
+            vertical: 'auto',
+            horizontal: 'hidden',
+            alwaysConsumeMouseWheel: false
+          }
+        });
+
+        textarea.remove();
+        host.id = 'Editor';
+        this.monacoEditor = editor;
+        this.ed = journoteEditor.adapter(editor, host, monaco);
+        this.ed.setSelectionRange(start, end);
+
+        const decorations = editor.createDecorationsCollection();
+        const highlightTags = () => {
+          const source = textModel.getValue();
+          const items = [];
+          // "# Title", "+ list" and "> quote" remain Markdown constructs.
+          const pattern = /(^|\s)([#@+>])([A-Za-z0-9_.-]+)/g;
+          let match;
+
+          while ((match = pattern.exec(source))) {
+            const offset = match.index + match[1].length;
+            const a = textModel.getPositionAt(offset);
+            const b = textModel.getPositionAt(
+              offset + match[2].length + match[3].length
+            );
+
+            items.push({
+              range: new monaco.Range(
+                a.lineNumber, a.column, b.lineNumber, b.column
+              ),
+              options: {
+                inlineClassName: {
+                  '#': 'jn-project',
+                  '+': 'jn-generic',
+                  '>': 'jn-event',
+                  '@': 'jn-person'
+                }[match[2]]
+              }
+            });
+          }
+          decorations.set(items);
+        };
+
+        editor.onDidChangeModelContent(() => {
+          highlightTags();
+          this.resizeEditor();
+        });
+        editor.onDidContentSizeChange(() => this.resizeEditor());
+
+        editor.addAction({
+          id: 'journote.next-occurrence',
+          label: 'Aggiungi cursore alla prossima occorrenza',
+          keybindings: [
+            monaco.KeyMod.CtrlCmd |
+            monaco.KeyMod.Alt |
+            monaco.KeyCode.KeyD
+          ],
+          run: ed => ed.getAction(
+            'editor.action.addSelectionToNextFindMatch'
+          ).run()
+        });
+
+        highlightTags();
+        this.resizeEditor();
+        if (focused) editor.focus();
+      } catch (error) {
+        if (this.generation !== generation) return;
+        editor?.dispose();
+        this.monacoModel?.dispose();
+        this.monacoEditor = null;
+        this.monacoModel = null;
+        host?.remove();
+
+        if (
+          this.generation !== generation ||
+          !this.editorField?.isConnected
+        ) return;
+
+        if (!textarea.isConnected) this.editorField.prepend(textarea);
+        this.ed = textarea;
+        console.warn('Monaco initialization failed:', error);
+        this.status.textContent =
+          'Editor semplice attivo: impossibile caricare Monaco.';
+        this.status.dataset.state = 'error';
+      }
+    },
+
     render() {
+      this.dispose();
+      const generation = this.generation;
       this.currentNote = null;
       this.el = eid('EditorWrap');
       this.el.innerHTML = '';
-      this.editorField = this.el.appendChild(view.createEl('div', {className: 'editor-field'}));
-      this.ed = this.editorField.appendChild(view.createEl('textarea', {
-        id: 'Editor',
-        className: 'editor-area',
-        placeholder: 'Scrivi una nota in Markdown...',
-        rows: 5,
-        spellcheck: false
-      }));
+
+      this.editorField = this.el.appendChild(
+        view.createEl('div', {className: 'editor-field'})
+      );
+
+      this.ed = this.editorField.appendChild(
+        view.createEl('textarea', {
+          id: 'Editor',
+          className: 'editor-area',
+          placeholder: 'Scrivi una nota in Markdown...',
+          rows: 5,
+          spellcheck: false
+        })
+      );
       this.ed.setAttribute('aria-label', 'Testo della nota in Markdown');
-      this.status = this.editorField.appendChild(view.createEl('div', {
-        id: 'EditorStatus',
-        className: 'editor-status'
-      }));
+
+      this.status = this.editorField.appendChild(
+        view.createEl('div', {
+          id: 'EditorStatus',
+          className: 'editor-status'
+        })
+      );
       this.status.setAttribute('aria-live', 'polite');
+
+      const EditorMinimizeBtn = this.editorField.appendChild(
+        view.createEl('button', {
+          id: 'EditorMinimizeBtn',
+          className: 'btn secondary editor-minimize-btn',
+          textContent: 'Minimize',
+          title: 'Minimize editor',
+          'aria-label': 'Minimize editor'
+        })
+      );
       this.pendingImageUploads = 0;
-      const EditorCtrl = this.el.appendChild(view.createEl('div', {id: 'EditorCtrl'}));
-      const EditorSaveBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorSaveBtn', className: 'btn primary', textContent: 'Save'}))
-      const EditorUpdateBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorUpdateBtn', className: 'btn secondary', textContent: 'Update', style: 'display:none;'}))
-      const EditorClearBtn = EditorCtrl.appendChild(view.createEl('button', {id: 'EditorClearBtn', className: 'btn info', textContent: 'Clear', style: 'display:none;'}))
+
+      const EditorCtrl = this.el.appendChild(
+        view.createEl('div', {id: 'EditorCtrl'})
+      );
+      const EditorSaveBtn = EditorCtrl.appendChild(
+        view.createEl('button', {
+          id: 'EditorSaveBtn',
+          className: 'btn primary',
+          textContent: 'Save'
+        })
+      );
+      const EditorMaximizeBtn = EditorCtrl.appendChild(
+        view.createEl('button', {
+          id: 'EditorMaximizeBtn',
+          className: 'btn secondary',
+          textContent: 'Maximize',
+          title: 'Maximize editor',
+          'aria-label': 'Maximize editor'
+        })
+      );
+      const EditorUpdateBtn = EditorCtrl.appendChild(
+        view.createEl('button', {
+          id: 'EditorUpdateBtn',
+          className: 'btn secondary',
+          textContent: 'Update',
+          style: 'display:none;'
+        })
+      );
+      const EditorClearBtn = EditorCtrl.appendChild(
+        view.createEl('button', {
+          id: 'EditorClearBtn',
+          className: 'btn info',
+          textContent: 'Clear',
+          style: 'display:none;'
+        })
+      );
 
       this.ed.addEventListener('input', () => this.resizeEditor());
-      this.ed.addEventListener('paste', async (ev) => {
-        const imageItem = Array.from(ev.clipboardData?.items || []).find(item =>
-          item.kind === 'file' && item.type.startsWith('image/')
+
+      this.editorField.addEventListener('paste', async ev => {
+        const imageItem = Array.from(ev.clipboardData?.items || []).find(
+          item => item.kind === 'file' && item.type.startsWith('image/')
         );
         const imageFile = imageItem?.getAsFile();
         if (!imageFile) return;
 
         ev.preventDefault();
-        const token = `journote-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const placeholder = `![Immagine in caricamento](pending:${token})`;
-        this.ed.setRangeText(placeholder, this.ed.selectionStart, this.ed.selectionEnd, 'end');
+        ev.stopImmediatePropagation();
+
+        const token =
+          `journote-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const placeholder =
+          `![Immagine in caricamento](pending:${token})`;
+
+        this.ed.setRangeText(
+          placeholder,
+          this.ed.selectionStart,
+          this.ed.selectionEnd,
+          'end'
+        );
         this.pendingImageUploads += 1;
         this.updateImageUploadState();
 
         const formData = new FormData();
-        formData.append('image', imageFile, imageFile.name || 'clipboard-image');
+        formData.append(
+          'image',
+          imageFile,
+          imageFile.name || 'clipboard-image'
+        );
+
         try {
-          const uploaded = await api.api('/api/images', {method: 'POST', body: formData});
+          const uploaded = await api.api('/api/images', {
+            method: 'POST',
+            body: formData
+          });
+          if (this.generation !== generation) return;
+
           const markerPosition = this.ed.value.indexOf(placeholder);
           if (markerPosition >= 0) {
             this.ed.setRangeText(
@@ -594,84 +1030,235 @@ const view = {
           this.status.textContent = 'Immagine inserita nella nota.';
           this.status.dataset.state = 'success';
         } catch (error) {
+          if (this.generation !== generation) return;
+
           const markerPosition = this.ed.value.indexOf(placeholder);
           if (markerPosition >= 0) {
-            this.ed.setRangeText('', markerPosition, markerPosition + placeholder.length, 'preserve');
+            this.ed.setRangeText(
+              '',
+              markerPosition,
+              markerPosition + placeholder.length,
+              'preserve'
+            );
           }
-          this.status.textContent = `Immagine non inserita: ${error.message}`;
+          this.status.textContent =
+            `Immagine non inserita: ${error.message}`;
           this.status.dataset.state = 'error';
         } finally {
+          if (this.generation !== generation) return;
           this.pendingImageUploads -= 1;
           this.updateImageUploadState();
           this.resizeEditor();
         }
-      });
-      this.ed.addEventListener('keydown', async (ev) => {
+      }, true);
+
+      this.editorField.addEventListener('keydown', async ev => {
+        if (ev.isComposing) return;
+
+        if (
+          ev.ctrlKey &&
+          ev.altKey &&
+          !ev.shiftKey &&
+          ev.key.toLowerCase() === 'd' &&
+          this.monacoEditor
+        ) {
+          ev.preventDefault();
+          ev.stopImmediatePropagation();
+          this.monacoEditor.getAction(
+            'editor.action.addSelectionToNextFindMatch'
+          ).run();
+          return;
+        }
+
         if (ev.key === 'Enter' && ev.ctrlKey && !ev.altKey) {
           ev.preventDefault();
+          ev.stopImmediatePropagation();
           if (this.pendingImageUploads) return;
           if (this.currentNote) await this.editNote();
           else await this.saveNote();
           return;
         }
-        if (ev.key === 'Tab') {
+
+        if (ev.key === 'Tab' && !this.monacoEditor) {
           ev.preventDefault();
-          this.ed.setRangeText('  ', this.ed.selectionStart, this.ed.selectionEnd, 'end');
+          this.ed.setRangeText(
+            '  ',
+            this.ed.selectionStart,
+            this.ed.selectionEnd,
+            'end'
+          );
           return;
         }
-        if (ev.ctrlKey && ev.key.toLowerCase() == 'd') {
+
+        if (
+          ev.ctrlKey &&
+          !ev.altKey &&
+          !ev.shiftKey &&
+          ev.key.toLowerCase() === 'd'
+        ) {
           ev.preventDefault();
-          this.ed.value = this.ed.value + new Date().toISOString().slice(0, 10);
+          ev.stopImmediatePropagation();
+          this.ed.setRangeText(
+            new Date().toISOString().slice(0, 10),
+            this.ed.value.length,
+            this.ed.value.length,
+            'end'
+          );
+          this.resizeEditor();
           return;
         }
-        if (ev.ctrlKey && !ev.altKey && ['b', 'i', 'k'].includes(ev.key.toLowerCase())) {
+
+        if (
+          ev.ctrlKey &&
+          !ev.altKey &&
+          ['b', 'i', 'k'].includes(ev.key.toLowerCase())
+        ) {
           ev.preventDefault();
-          const marker = ev.key.toLowerCase() === 'b' ? '**' : ev.key.toLowerCase() === 'i' ? '*' : '`';
+          ev.stopImmediatePropagation();
+          const marker = ev.key.toLowerCase() === 'b'
+            ? '**'
+            : ev.key.toLowerCase() === 'i'
+              ? '*'
+              : '`';
           this.insertMarkdown(marker, marker);
         }
-      });
+      }, true);
 
-      /* Button events */
-      EditorSaveBtn.addEventListener('click', async (ev) => {
+      EditorSaveBtn.addEventListener('click', async ev => {
         if (this.pendingImageUploads) return;
-        await this.saveNote()
+        await this.saveNote();
       });
-      EditorClearBtn.addEventListener('click', (ev) => {
+      EditorMaximizeBtn.addEventListener('click', ev => {
+        this.toggleMaximize();
+      });
+      EditorMinimizeBtn.addEventListener('click', ev => {
+        this.toggleMaximize();
+      });
+      EditorClearBtn.addEventListener('click', ev => {
         this.clear();
       });
-      EditorUpdateBtn.addEventListener('click', async (ev) => {
+      EditorUpdateBtn.addEventListener('click', async ev => {
         if (this.pendingImageUploads) return;
         this.editNote();
       });
 
+      const hint = view.createEl('div', {
+        className: 'editor-hint',
+        textContent:
+          'Ctrl+Alt+D: cursore successivo · Alt+clic: aggiungi cursore · Ctrl+B/I/K: grassetto/corsivo/codice · Ctrl+Enter: salva'
+      });
+      this.editorField.appendChild(hint);
+      this.upgradeEditor(generation, this.ed);
     },
+
+    toggleMaximize() {
+      const field = this.editorField;
+      if (!field) return;
+      const maximized = field.classList.toggle('editor-maximized');
+      const btn = eid('EditorMaximizeBtn');
+      if (btn) btn.textContent = maximized ? 'Minimize' : 'Maximize';
+      this.resizeEditor();
+      if (this.monacoEditor) this.monacoEditor.layout();
+      if (maximized) this.ed.focus();
+    },
+
     resizeEditor() {
+      if (this.editorField?.classList.contains('editor-maximized')) {
+        if (this.monacoEditor) {
+          const host = this.monacoEditor.getContainerDomNode();
+          const height = Math.max(
+            window.innerHeight - 220,
+            300
+          );
+          if (host.style.height !== `${height}px`) {
+            host.style.height = `${height}px`;
+          }
+          this.monacoEditor.layout();
+          return;
+        }
+        this.ed.style.height =
+          `${Math.max(window.innerHeight - 220, 300)}px`;
+        return;
+      }
+      if (this.monacoEditor) {
+        const host = this.monacoEditor.getContainerDomNode();
+        const height = Math.min(
+          Math.max(this.monacoEditor.getContentHeight(), 120),
+          300
+        );
+        if (host.style.height !== `${height}px`) {
+          host.style.height = `${height}px`;
+        }
+        this.monacoEditor.layout();
+        return;
+      }
       this.ed.style.height = 'auto';
-      this.ed.style.height = `${Math.min(Math.max(this.ed.scrollHeight, 120), 300)}px`;
+      this.ed.style.height =
+        `${Math.min(Math.max(this.ed.scrollHeight, 120), 300)}px`;
     },
+
     updateImageUploadState() {
       const busy = this.pendingImageUploads > 0;
       eid('EditorSaveBtn').disabled = busy;
       eid('EditorUpdateBtn').disabled = busy;
       if (busy) {
-        this.status.textContent = `Caricamento immagine${this.pendingImageUploads > 1 ? ` (${this.pendingImageUploads})` : ''}...`;
+        this.status.textContent =
+          `Caricamento immagine${this.pendingImageUploads > 1 ? ` (${this.pendingImageUploads})` : ''}...`;
         this.status.dataset.state = 'loading';
       }
     },
+
     insertMarkdown(prefix, suffix) {
+      if (this.monacoEditor) {
+        const editor = this.monacoEditor;
+        const textModel = editor.getModel();
+
+        editor.pushUndoStop();
+        editor.executeEdits(
+          'journote.markdown',
+          editor.getSelections().map(range => ({
+            range,
+            text: prefix + textModel.getValueInRange(range) + suffix,
+            forceMoveMarkers: true
+          })),
+          inverseEdits => inverseEdits.map(edit => {
+            const start =
+              textModel.getOffsetAt(edit.range.getStartPosition()) +
+              prefix.length;
+            const end =
+              textModel.getOffsetAt(edit.range.getEndPosition()) -
+              suffix.length;
+            const a = textModel.getPositionAt(start);
+            const b = textModel.getPositionAt(end);
+            return new window.monaco.Selection(
+              a.lineNumber, a.column, b.lineNumber, b.column
+            );
+          })
+        );
+        editor.pushUndoStop();
+        editor.focus();
+        return;
+      }
+
       const start = this.ed.selectionStart;
       const end = this.ed.selectionEnd;
       const selectedText = this.ed.value.slice(start, end);
-      this.ed.setRangeText(`${prefix}${selectedText}${suffix}`, start, end, 'select');
+      this.ed.setRangeText(
+        `${prefix}${selectedText}${suffix}`,
+        start,
+        end,
+        'select'
+      );
       if (!selectedText) {
         const cursor = start + prefix.length;
         this.ed.setSelectionRange(cursor, cursor);
       }
       this.ed.focus();
     },
+
     clear() {
       this.ed.value = '';
-      this.ed.style.height = '';
+      this.resizeEditor();
       this.status.textContent = '';
       this.status.dataset.state = '';
       this.currentNote = null;
@@ -679,6 +1266,7 @@ const view = {
       eid('EditorUpdateBtn').style.display = 'none';
       eid('EditorClearBtn').style.display = 'none';
     },
+
     startReply(note) {
       this.clear();
       this.ed.value = `<R:${note.id} `;
@@ -686,6 +1274,7 @@ const view = {
       this.ed.focus();
       this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
     },
+
     renderEditNote(note) {
       this.currentNote = note;
       this.ed.value = note.text;
@@ -696,19 +1285,26 @@ const view = {
       eid('EditorClearBtn').style.display = 'block';
       this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
     },
+
     async saveNote() {
       if (this.saving || !this.ed.value.trim()) return;
       this.saving = true;
       const raw = this.ed.value;
       const newTags = businessLogic.getNewTags(raw);
       let saved = false;
+
       try {
-        const response = await businessLogic.saveNote(raw, this.parseLeadingDate(raw));
+        const response = await businessLogic.saveNote(
+          raw,
+          this.parseLeadingDate(raw)
+        );
         saved = true;
         const isProperty = response.kind === 'tag_property';
+
         if (isProperty) {
           if (this.ed.value === raw) this.ed.value = '';
-          this.status.textContent = `Proprietà salvata per ${response.tag}.`;
+          this.status.textContent =
+            `Proprietà salvata per ${response.tag}.`;
         } else {
           view.Main.pushNote(response.note);
           const leadingTags = [];
@@ -716,10 +1312,19 @@ const view = {
             if (/^[#@>+]/.test(word)) leadingTags.push(word);
             else break;
           }
-          if (this.ed.value === raw) this.ed.value = leadingTags.length ? `${leadingTags.join(' ')} ` : '';
+          if (this.ed.value === raw) {
+            this.ed.value = leadingTags.length
+              ? `${leadingTags.join(' ')} `
+              : '';
+          }
           this.status.textContent = 'Nota salvata.';
         }
-        businessLogic.addActionRequiredTags(isProperty ? newTags.filter(tag => tag === response.tag) : newTags);
+
+        businessLogic.addActionRequiredTags(
+          isProperty
+            ? newTags.filter(tag => tag === response.tag)
+            : newTags
+        );
         this.status.dataset.state = 'success';
         await page.home.refreshMetadata();
         await view.ActionRequiredBox.render();
@@ -734,6 +1339,7 @@ const view = {
         this.ed.focus();
       }
     },
+
     async editNote() {
       const raw = this.ed.value;
       if (!raw) return;
@@ -742,130 +1348,199 @@ const view = {
       const previousDate = this.currentNote.date;
       this.currentNote.text = raw;
       this.currentNote.date = date || this.currentNote.date;
-      const note = await businessLogic.editNote(this.currentNote, previousTags, previousDate);
+
+      const note = await businessLogic.editNote(
+        this.currentNote,
+        previousTags,
+        previousDate
+      );
       if (note) {
         view.Main.editedNote(note, previousTags, previousDate);
         view.EditorWrap.clear();
         await page.home.refreshMetadata();
       }
     },
+
     parseLeadingDate(text) {
       const m = text.trim().match(/^(\d{4}-\d{2}-\d{2})\b/);
       return m ? m[1] : null;
     }
   },
+
   TopBar: {
     render() {
       this.el = eid('TopBar');
       this.el.innerHTML = '';
-      
-      const navBtnsWrap = this.el.appendChild(view.createEl('div', {className: 'navBtnsWrap'}));
 
-      const hamburger = navBtnsWrap.appendChild(view.createEl('button', {
-        id: 'HamburgerBtn',
-        className: 'navBtn btn standard',
-        innerHTML: '<i class="fa-xs fa-fw fa-solid fa-bars fa-middle"></i>',
-        style: { top: '10px',left: '10px',zIndex: '1000',fontSize: '20px',height: '36px'},
-        onclick: () => {
-          model.set('leftBarVisible', !model.get('leftBarVisible'));
-        }
-      }));
+      const navBtnsWrap = this.el.appendChild(
+        view.createEl('div', {className: 'navBtnsWrap'})
+      );
+
+      const hamburger = navBtnsWrap.appendChild(
+        view.createEl('button', {
+          id: 'HamburgerBtn',
+          className: 'navBtn btn standard',
+          innerHTML:
+            '<i class="fa-xs fa-fw fa-solid fa-bars fa-middle"></i>',
+          style: {
+            top: '10px',
+            left: '10px',
+            zIndex: '1000',
+            fontSize: '20px',
+            height: '36px'
+          },
+          onclick: () => {
+            model.set('leftBarVisible', !model.get('leftBarVisible'));
+          }
+        })
+      );
       if (!eid('LeftBar')) hamburger.style.display = 'none';
-            
-      const home = navBtnsWrap.appendChild(view.createEl('button', {
-        id:'HomeBtn',
-        className:'navBtn btn secondary',
-        innerHTML:'<i class="fa-xs fa-fw fa-solid fa-home fa-middle"></i>',
-        style: {top:'10px', left:'10px', zIndex:'1000', fontSize:'20px', height:'36px'},
-        onclick:() => {
-          location.hash = '/home'
-        }
-      }));
-      
-      const calendar = navBtnsWrap.appendChild(view.createEl('button', {
-        id: 'calendarBtn',
-        className: 'navBtn btn secondary',
-        innerHTML: '<i class="fa-xs fa-fw fa-regular fa-calendar fa-middle"></i>',
-        style: {top: '10px', left: '10px', zIndex: '1000', fontSize: '20px', height: '36px'},
-        onclick: () => {
-          location.hash = '/calendar'
-        }
-      }));
 
-      navBtnsWrap.appendChild(view.createEl('button', {
-        id: 'explorerBtn',
-        className: 'navBtn btn secondary',
-        innerHTML: '<i class="fa-xs fa-fw fa-solid fa-database fa-middle"></i>',
-        title: 'Explorer',
-        'aria-label': 'Explorer',
-        style: {top: '10px', left: '10px', zIndex: '1000', fontSize: '20px', height: '36px'},
-        onclick: () => {
-          location.hash = '/explorer';
-        }
-      }));
-      
-      this.tc = this.el.appendChild(view.createEl('div', {id: 'TopBarContainer', className: 'scrollable-x'}));
+      const home = navBtnsWrap.appendChild(
+        view.createEl('button', {
+          id: 'HomeBtn',
+          className: 'navBtn btn secondary',
+          innerHTML:
+            '<i class="fa-xs fa-fw fa-solid fa-home fa-middle"></i>',
+          style: {
+            top: '10px',
+            left: '10px',
+            zIndex: '1000',
+            fontSize: '20px',
+            height: '36px'
+          },
+          onclick: () => {
+            location.hash = '/home';
+          }
+        })
+      );
+
+      const calendar = navBtnsWrap.appendChild(
+        view.createEl('button', {
+          id: 'calendarBtn',
+          className: 'navBtn btn secondary',
+          innerHTML:
+            '<i class="fa-xs fa-fw fa-regular fa-calendar fa-middle"></i>',
+          style: {
+            top: '10px',
+            left: '10px',
+            zIndex: '1000',
+            fontSize: '20px',
+            height: '36px'
+          },
+          onclick: () => {
+            location.hash = '/calendar';
+          }
+        })
+      );
+
+      navBtnsWrap.appendChild(
+        view.createEl('button', {
+          id: 'explorerBtn',
+          className: 'navBtn btn secondary',
+          innerHTML:
+            '<i class="fa-xs fa-fw fa-solid fa-database fa-middle"></i>',
+          title: 'Explorer',
+          'aria-label': 'Explorer',
+          style: {
+            top: '10px',
+            left: '10px',
+            zIndex: '1000',
+            fontSize: '20px',
+            height: '36px'
+          },
+          onclick: () => {
+            location.hash = '/explorer';
+          }
+        })
+      );
+
+      this.tc = this.el.appendChild(
+        view.createEl('div', {
+          id: 'TopBarContainer',
+          className: 'scrollable-x'
+        })
+      );
     },
+
     addTab(tag, notes, label = tag) {
-      // Pill
       const elPill = document.createElement('div');
       elPill.className = 'tabPill';
       elPill.dataset.key = tag;
       elPill.title = label;
       elPill.onclick = () => page.home.activateTagview(tag);
       this.tc.appendChild(elPill);
-      
-      // Pill label
+
       const elPillLabel = document.createElement('span');
       elPillLabel.textContent = label;
       elPill.appendChild(elPillLabel);
 
-      // Pill close button
       const elPillCloseBtn = document.createElement('span');
       elPillCloseBtn.className = 'x';
       elPillCloseBtn.textContent = '×';
-      elPillCloseBtn.onclick = (ev) => {
+      elPillCloseBtn.onclick = ev => {
         ev.stopPropagation();
         page.home.removeTagview(tag);
       };
       elPill.appendChild(elPillCloseBtn);
-      elPill.scrollIntoView({behavior:'smooth', inline:'start'});
+      elPill.scrollIntoView({behavior: 'smooth', inline: 'start'});
     },
+
     activateTab(tag) {
       console.log('[fn] TopBar.activate', tag);
-      for(const el of document.querySelectorAll('.tabPill')) el.classList.remove('active');
-      const pill = document.querySelector(`.tabPill[data-key="${tag}"]`);
-      if(pill) {
-        pill.scrollIntoView({behavior:'smooth', inline:'nearest', container: 'nearest'});
+      for (const el of document.querySelectorAll('.tabPill')) {
+        el.classList.remove('active');
+      }
+      const pill = document.querySelector(
+        `.tabPill[data-key="${tag}"]`
+      );
+      if (pill) {
+        pill.scrollIntoView({
+          behavior: 'smooth',
+          inline: 'nearest',
+          container: 'nearest'
+        });
         pill.classList.add('active');
       }
     },
+
     removeTab(tag) {
       console.log('[fn] removeTagview', tag);
       const pill = this.tc.querySelector(`.tabPill[data-key="${tag}"]`);
       if (pill) pill.remove();
     }
   },
+
   Main: {
     render() {
       this.el = eid('Main');
       this.el.innerHTML = '';
-      this.el_tb = this.el.appendChild(view.createEl('div', {id: 'TopBar'}));
-      this.el_cw = this.el.appendChild(view.createEl('div', {id: 'ColumnsWrap', className: 'columns scrollable-x'}));
-      this.el_ew = this.el.appendChild(view.createEl('div', {id: 'EditorWrap'}));
+      this.el_tb = this.el.appendChild(
+        view.createEl('div', {id: 'TopBar'})
+      );
+      this.el_cw = this.el.appendChild(
+        view.createEl('div', {
+          id: 'ColumnsWrap',
+          className: 'columns scrollable-x'
+        })
+      );
+      this.el_ew = this.el.appendChild(
+        view.createEl('div', {id: 'EditorWrap'})
+      );
       view.TopBar.render();
       view.EditorWrap.render();
     },
+
     addTab(tag, notes, label = tag) {
-      // Column
       const tagObj = (model.get('tags') || []).find(t => t.name === tag);
-      const elColumn = this.el_cw.appendChild(document.createElement('div'));
+      const elColumn = this.el_cw.appendChild(
+        document.createElement('div')
+      );
       elColumn.className = 'column';
       elColumn.dataset.key = tag;
-      elColumn.style.position = 'relative';   // needed for resizer positioning
+      elColumn.style.position = 'relative';
       elColumn.style.flex = '0 0 420px';
 
-      // Add resize handle
       const resizeHandle = document.createElement('div');
       resizeHandle.className = 'ColumnResizer';
       resizeHandle.style.width = '5px';
@@ -876,90 +1551,111 @@ const view = {
       resizeHandle.style.bottom = '0';
       resizeHandle.style.zIndex = '10';
       elColumn.appendChild(resizeHandle);
-
-      // Make resizable
       view.Main.makeResizable(elColumn, resizeHandle);
 
-
-      // Content wrapper
-      const elColCont = elColumn.appendChild(document.createElement('div'));
+      const elColCont = elColumn.appendChild(
+        document.createElement('div')
+      );
       elColCont.className = 'column-content';
       elColCont.dataset.key = tag;
 
-      // Header
-      const header = elColCont.appendChild(document.createElement('div'));
+      const header = elColCont.appendChild(
+        document.createElement('div')
+      );
       header.className = 'columnHeader';
       header.textContent = label;
 
-      const subheader = elColCont.appendChild(document.createElement('div'));
+      const subheader = elColCont.appendChild(
+        document.createElement('div')
+      );
       subheader.className = 'columnSubHeader';
 
       if (tagObj == undefined) {
         const tagType = helper.getClassfromTag(tag);
         if (tagType == 'Journal') {
-          subheader.innerHTML = (new Date(tag)).toLocaleDateString('it-IT', { weekday: 'long', year: "numeric", month: "long", day: "numeric" });
+          subheader.innerHTML = new Date(tag).toLocaleDateString(
+            'it-IT',
+            {
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric'
+            }
+          );
         } else if (tagType == 'FullText') {
           subheader.innerHTML = '';
         } else {
           console.error('tagObj is undefined');
         }
       } else {
-        const conv = new showdown.Converter({metadata: true, sanitize: true});
+        const conv = new showdown.Converter({
+          metadata: true,
+          sanitize: true
+        });
         const content = conv.makeHtml(tagObj.content || '');
         subheader.innerHTML = content;
         sanitizeRenderedMarkdown(subheader);
       }
       subheader.style.display = 'block';
 
-      // Buttons
-      const btnWrap = header.appendChild(document.createElement('div'));
+      const btnWrap = header.appendChild(
+        document.createElement('div')
+      );
       btnWrap.style.float = 'right';
       btnWrap.style.display = 'flex';
       btnWrap.style.gap = '8px';
 
-      // Maximize button
-      const contentBtn = btnWrap.appendChild(document.createElement('button'));
-      contentBtn.innerHTML = '<i class="fa fa-eye fa-fw fa-solid fa-xs"> </i>';
+      const contentBtn = btnWrap.appendChild(
+        document.createElement('button')
+      );
+      contentBtn.innerHTML =
+        '<i class="fa fa-eye fa-fw fa-solid fa-xs"> </i>';
       contentBtn.title = 'Show content';
       contentBtn.className = 'btnp primary';
-      contentBtn.onclick = (ev) => {
+      contentBtn.onclick = ev => {
         ev.stopPropagation();
-          if (subheader.style.display === "none") {
-            subheader.style.display = "block";
-          } else {
-            subheader.style.display = "none";
-          }
+        if (subheader.style.display === 'none') {
+          subheader.style.display = 'block';
+        } else {
+          subheader.style.display = 'none';
+        }
       };
 
-      // Maximize button
-      const maxBtn = btnWrap.appendChild(document.createElement('button'));
-      maxBtn.innerHTML = '<i class="fa fa-expand fa-fw fa-solid fa-xs"> </i>';
+      const maxBtn = btnWrap.appendChild(
+        document.createElement('button')
+      );
+      maxBtn.innerHTML =
+        '<i class="fa fa-expand fa-fw fa-solid fa-xs"> </i>';
       maxBtn.title = 'Maximize column';
       maxBtn.className = 'btnp primary';
-      maxBtn.onclick = (ev) => {
+      maxBtn.onclick = ev => {
         ev.stopPropagation();
         this.maximizeTab(tag);
       };
 
-      // Close button
-      const closeBtn = btnWrap.appendChild(document.createElement('button'));
-      closeBtn.innerHTML = '<i class="fa fa-x fa-fw fa-solid fa-xs"> </i>';
+      const closeBtn = btnWrap.appendChild(
+        document.createElement('button')
+      );
+      closeBtn.innerHTML =
+        '<i class="fa fa-x fa-fw fa-solid fa-xs"> </i>';
       closeBtn.title = 'Close tab';
       closeBtn.className = 'btnp primary';
-      closeBtn.onclick = (ev) => {
+      closeBtn.onclick = ev => {
         ev.stopPropagation();
         page.home.removeTagview(tag);
       };
 
-      // Note list
-      const elNoteList = elColCont.appendChild(document.createElement('div'));
+      const elNoteList = elColCont.appendChild(
+        document.createElement('div')
+      );
       elNoteList.className = 'notesList scrollable';
 
-      // Load notes for this tag
-      if(notes.length === 0) {
+      if (notes.length === 0) {
         this.showEmptyState(elNoteList, tag);
       } else {
-        notes.forEach(n => elNoteList.appendChild(this.genNoteItem(n, tag)) );
+        notes.forEach(n => {
+          elNoteList.appendChild(this.genNoteItem(n, tag));
+        });
         setTimeout(() => {
           console.log('Scrolling note list to bottom', tag);
           elNoteList.scrollTop = elNoteList.scrollHeight;
@@ -967,56 +1663,78 @@ const view = {
       }
       page.home.activateTagview(tag);
     },
+
     activateTab(tag) {
       console.log('[fn] Main.activate', tag);
-      for(const el of this.el_cw.querySelectorAll('.column')) el.classList.remove('active');
-      const col = this.el_cw.querySelector(`.column[data-key="${tag}"]`);
-      if(col) {
-        col.scrollIntoView({behavior:'smooth', inline:'start'});
+      for (const el of this.el_cw.querySelectorAll('.column')) {
+        el.classList.remove('active');
+      }
+      const col = this.el_cw.querySelector(
+        `.column[data-key="${tag}"]`
+      );
+      if (col) {
+        col.scrollIntoView({behavior: 'smooth', inline: 'start'});
         col.classList.add('active');
       }
     },
+
     removeTab(tag) {
-      const elColToRemove = this.el_cw.querySelector(`.column[data-key="${tag}"]`);
-      if (elColToRemove) elColToRemove.remove()
+      const elColToRemove = this.el_cw.querySelector(
+        `.column[data-key="${tag}"]`
+      );
+      if (elColToRemove) elColToRemove.remove();
     },
+
     pushNote(note) {
       console.log('[fn] pushNote', note);
-      /* automatically add to all tag views based on note tags */
-      for (let tag of note.tags) {
-        if (!model.get('tagsVisible').includes(tag)) {
-          // page.home.addTagview(tag);
-        } else {
-          const noteList = document.querySelector(`.column[data-key="${tag}"] .notesList`);
+      for (const tag of note.tags) {
+        if (model.get('tagsVisible').includes(tag)) {
+          const noteList = document.querySelector(
+            `.column[data-key="${tag}"] .notesList`
+          );
           if (noteList) {
-            const elNotePushed = noteList.appendChild(this.genNoteItem(note, tag));
-            elNotePushed.scrollIntoView({behavior:'smooth', inline:'start'});
+            const elNotePushed = noteList.appendChild(
+              this.genNoteItem(note, tag)
+            );
+            elNotePushed.scrollIntoView({
+              behavior: 'smooth',
+              inline: 'start'
+            });
           }
         }
       }
 
-      /* automatically add date view */
-      if (!model.get('tagsVisible').includes(note.date)) {
-        // page.home.addTagview(note.date);
-      } else {
-        const noteList = document.querySelector(`.column[data-key="${note.date}"] .notesList`);
+      if (model.get('tagsVisible').includes(note.date)) {
+        const noteList = document.querySelector(
+          `.column[data-key="${note.date}"] .notesList`
+        );
         if (noteList) {
-          const elNotePushed = noteList.appendChild(this.genNoteItem(note, note.date));
-          elNotePushed.scrollIntoView({behavior:'smooth', inline:'start'});
+          const elNotePushed = noteList.appendChild(
+            this.genNoteItem(note, note.date)
+          );
+          elNotePushed.scrollIntoView({
+            behavior: 'smooth',
+            inline: 'start'
+          });
         }
       }
+    },
 
-    }, 
     updateTab(tag, notes) {
-      const column = this.el_cw.querySelector(`.column[data-key="${tag}"]`);
+      const column = this.el_cw.querySelector(
+        `.column[data-key="${tag}"]`
+      );
       const noteList = column?.querySelector('.notesList');
       if (!noteList) return;
       if (notes.length === 0) {
         this.showEmptyState(noteList, tag);
         return;
       }
-      noteList.replaceChildren(...notes.map(note => this.genNoteItem(note, tag)));
+      noteList.replaceChildren(
+        ...notes.map(note => this.genNoteItem(note, tag))
+      );
     },
+
     showEmptyState(noteList, tag) {
       const message = document.createElement('p');
       message.className = 'empty-state';
@@ -1029,132 +1747,237 @@ const view = {
       }
       noteList.replaceChildren(message);
     },
+
     maximizeTab(key) {
       console.log('[fn] maximizeTab', key);
-      const col = this.el_cw.querySelector(`.column[data-key="${key}"]`);
+      const col = this.el_cw.querySelector(
+        `.column[data-key="${key}"]`
+      );
       if (!col) return;
       col.classList.toggle('maximized');
     },
+
     genNoteItem(n, currentTag, relatedRole = null) {
-      let taskClass = ''
-      if(n.task != null && n.task != '') { taskClass = 'task-'+n.task }
+      let taskClass = '';
+      if (n.task != null && n.task != '') {
+        taskClass = 'task-' + n.task;
+      }
 
       const elNoteItem = view.createEl('div', {
         className: `noteItem ${taskClass}`,
         dataset: {id: n.id}
-      })
+      });
       if (relatedRole) {
-        elNoteItem.classList.add('noteItem-related', relatedRole === 'parent' ? 'noteItem-related-parent' : 'noteItem-related-child');
+        elNoteItem.classList.add(
+          'noteItem-related',
+          relatedRole === 'parent'
+            ? 'noteItem-related-parent'
+            : 'noteItem-related-child'
+        );
       }
-      
-      const elNoteDate = elNoteItem.appendChild(view.createEl('div', {
-        className: 'noteDate flex-col',
-        innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '-' + n.date.substring(8,10) + 
-                (n.duedate ? '<br><span class="color-purple-4">' + new Date(n.duedate).toLocaleString('default', { month: 'short' }) + '-' + n.duedate.substring(8,10) + '</span>' : ''  )
-      }));
 
-      // Reply indicators: up arrow (replies to another note) above down arrow (has replies).
-      // Both arrows are always shown; disabled (grey) when the relation is not set.
+      const elNoteDate = elNoteItem.appendChild(
+        view.createEl('div', {
+          className: 'noteDate flex-col',
+          innerHTML:
+            new Date(n.date).toLocaleString('default', {month: 'short'}) +
+            '-' + n.date.substring(8, 10) +
+            (
+              n.duedate
+                ? '<br><span class="color-purple-4">' +
+                  new Date(n.duedate).toLocaleString(
+                    'default', {month: 'short'}
+                  ) +
+                  '-' + n.duedate.substring(8, 10) + '</span>'
+                : ''
+            )
+        })
+      );
+
       {
-        const elReplyIndicators = elNoteItem.appendChild(view.createEl('div', {
-          className: 'noteReplyIndicators flex-col',
-          style: 'display:flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 1px; padding-left: 2px;'
-        }));
+        const elReplyIndicators = elNoteItem.appendChild(
+          view.createEl('div', {
+            className: 'noteReplyIndicators flex-col',
+            style:
+              'display:flex; flex-direction:row; align-items:center; justify-content:flex-start; gap:1px; padding-left:2px;'
+          })
+        );
+
         if (!elNoteItem.classList.contains('noteItem-related-child')) {
-          elReplyIndicators.appendChild(view.createEl('button', {
-            className: n.replied_to ? 'btn primary small' : 'btn transparent muted small',
-            innerHTML: '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
-            title: n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
-            'aria-label': n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
-            tabindex: n.replied_to ? 0 : -1,
-            onclick: () => { if (n.replied_to) view.Main.openRelatedNote(n.replied_to, 'above', elNoteItem); }
-          }));
+          elReplyIndicators.appendChild(
+            view.createEl('button', {
+              className: n.replied_to
+                ? 'btn primary small'
+                : 'btn transparent muted small',
+              innerHTML:
+                '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
+              title: n.replied_to
+                ? 'Risponde a un\'altra nota'
+                : 'Nessuna nota a cui risponde',
+              'aria-label': n.replied_to
+                ? 'Risponde a un\'altra nota'
+                : 'Nessuna nota a cui risponde',
+              tabindex: n.replied_to ? 0 : -1,
+              onclick: () => {
+                if (n.replied_to) {
+                  view.Main.openRelatedNote(
+                    n.replied_to,
+                    'above',
+                    elNoteItem
+                  );
+                }
+              }
+            })
+          );
         }
+
         if (!elNoteItem.classList.contains('noteItem-related-parent')) {
-          elReplyIndicators.appendChild(view.createEl('button', {
-            className: n.reply ? 'btn primary small' : 'btn transparent muted small',
-            innerHTML: '<i class="fa-solid fa-caret-down fa-2xs fa-fw"></i>',
-            title: n.reply ? 'Ha una risposta' : 'Nessuna risposta',
-            'aria-label': n.reply ? 'Ha una risposta' : 'Nessuna risposta',
-            tabindex: n.reply ? 0 : -1,
-            onclick: (ev) => {
-              if (n.reply) {ev.stopPropagation(); view.Main.openRelatedNote(n.reply, 'below', elNoteItem);}
-              else {ev.stopPropagation(); view.EditorWrap.startReply(n);}
-            },
-          }));
+          elReplyIndicators.appendChild(
+            view.createEl('button', {
+              className: n.reply
+                ? 'btn primary small'
+                : 'btn transparent muted small',
+              innerHTML:
+                '<i class="fa-solid fa-caret-down fa-2xs fa-fw"></i>',
+              title: n.reply ? 'Ha una risposta' : 'Nessuna risposta',
+              'aria-label': n.reply
+                ? 'Ha una risposta'
+                : 'Nessuna risposta',
+              tabindex: n.reply ? 0 : -1,
+              onclick: ev => {
+                if (n.reply) {
+                  ev.stopPropagation();
+                  view.Main.openRelatedNote(n.reply, 'below', elNoteItem);
+                } else {
+                  ev.stopPropagation();
+                  view.EditorWrap.startReply(n);
+                }
+              }
+            })
+          );
         }
       }
-      const elNoteDays = elNoteItem.appendChild(view.createEl('div', {
-        className: 'noteDays flex-col',
-        innerHTML: helper.diffToToday(new Date(n.date)) + 
-                (n.duedate ? '<br><span class="color-purple-4">' + helper.diffToToday(new Date(n.duedate)) + '</span>': '' )
-      }));
 
-      // Note Text
+      const elNoteDays = elNoteItem.appendChild(
+        view.createEl('div', {
+          className: 'noteDays flex-col',
+          innerHTML:
+            helper.diffToToday(new Date(n.date)) +
+            (
+              n.duedate
+                ? '<br><span class="color-purple-4">' +
+                  helper.diffToToday(new Date(n.duedate)) +
+                  '</span>'
+                : ''
+            )
+        })
+      );
+
       const elNoteText = elNoteItem
-        .appendChild(view.createEl('div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
-        .appendChild(this.genNoteText(n, currentTag))
-
-      // ButtonWrap
-      const elNoteBtnWrap = elNoteItem.appendChild(view.createEl('div', {
-        style: "display:flex; flex-direction: column; gap: 2px; flex: 0; padding-left: 5px;"
-      }));
-
-      // Edit button
-      elNoteBtnWrap.appendChild(view.createEl('button', {
-        className: 'btn muted small transparent',
-        innerHTML: '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
-        title: 'Edit note',
-        onclick: (ev) => {
-          ev.stopPropagation();
-          view.EditorWrap.renderEditNote(n);
-        }
-      }));
-      
-      // Delete button
-      const elNoteDelBtn = elNoteBtnWrap.appendChild(view.createEl('button', {
-        className: 'btn muted small transparent',
-        innerHTML: '<i class="fa fa-x fa-solid fa-fw fa-2xs"></i>',
-        title: 'Delete note',
-        onclick: async (ev) => {
-          ev.stopPropagation();
-          if (!confirm('Delete this note?')) return;
-          const ok = await api.api(`/api/notes/${n.id}`, {method: "DELETE"});
-          if (ok && ok.status === 'deleted') {
-            document.querySelectorAll(`.noteItem[data-id="${n.id}"]`).forEach(item => item.remove());
-            await page.home.refreshMetadata();
+        .appendChild(view.createEl('div', {
+          style: {
+            flex: '1',
+            display: 'flex',
+            flexDirection: 'column',
+            paddingLeft: '5px'
           }
-        }
-      }));
+        }))
+        .appendChild(this.genNoteText(n, currentTag));
 
-      return elNoteItem
+      const elNoteBtnWrap = elNoteItem.appendChild(
+        view.createEl('div', {
+          style:
+            'display:flex; flex-direction:row; gap:2px; flex:0; padding-left:5px;'
+        })
+      );
+
+      elNoteBtnWrap.appendChild(
+        view.createEl('button', {
+          className: 'btn muted small transparent',
+          innerHTML:
+            '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
+          title: 'Edit note',
+          onclick: ev => {
+            ev.stopPropagation();
+            view.EditorWrap.renderEditNote(n);
+          }
+        })
+      );
+
+      const elNoteDelBtn = elNoteBtnWrap.appendChild(
+        view.createEl('button', {
+          className: 'btn muted small transparent',
+          innerHTML: '<i class="fa fa-x fa-solid fa-fw fa-2xs"></i>',
+          title: 'Delete note',
+          onclick: async ev => {
+            ev.stopPropagation();
+            if (!confirm('Delete this note?')) return;
+            const ok = await api.api(`/api/notes/${n.id}`, {
+              method: 'DELETE'
+            });
+            if (ok && ok.status === 'deleted') {
+              document.querySelectorAll(
+                `.noteItem[data-id="${n.id}"]`
+              ).forEach(item => item.remove());
+              await page.home.refreshMetadata();
+            }
+          }
+        })
+      );
+
+      return elNoteItem;
     },
+
     genNoteText(n, currentTag) {
       const elNoteText = document.createElement('div');
       elNoteText.className = 'noteText';
       let noteText = escapeHTML(n.text);
       const noteKey = String(n.id).replace(/[^A-Za-z0-9]/g, '');
-      const labels = helper.extractTagsFromText(n.text, false).map((tag, index) => {
-        const token = `JOURNOTETAG${noteKey}X${index}END`;
-        // For hashtags, we want to hide the # symbol from the text but keep it for filtering
-        if (tag.startsWith('#')) {
-          // Replace the full tag (including #) with a token, but only show the tag without #
-          noteText = noteText.replace(new RegExp(tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), token);
-          return {tag, token, displayTag: tag.substring(1)};
+
+      const labels = helper.extractTagsFromText(n.text, false).map(
+        (tag, index) => {
+          const token = `JOURNOTETAG${noteKey}X${index}END`;
+          if (tag.startsWith('#')) {
+            noteText = noteText.replace(
+              new RegExp(
+                tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+                'g'
+              ),
+              token
+            );
+            return {tag, token, displayTag: tag.substring(1)};
+          }
+          noteText = noteText.replace(
+            new RegExp(
+              tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+              'g'
+            ),
+            token
+          );
+          return {tag, token};
         }
-        noteText = noteText.replace(new RegExp(tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), token);
-        return {tag, token};
+      );
+
+      const converter = new showdown.Converter({
+        metadata: true,
+        sanitize: true
       });
-      const converter = new showdown.Converter({metadata: true, sanitize: true});
       elNoteText.innerHTML = converter.makeHtml(noteText);
-        sanitizeRenderedMarkdown(elNoteText);
+      sanitizeRenderedMarkdown(elNoteText);
+
       elNoteText.querySelectorAll('img').forEach(image => {
         image.loading = 'lazy';
         image.decoding = 'async';
         image.tabIndex = 0;
         image.setAttribute('role', 'button');
-        image.setAttribute('aria-label', `Apri immagine a schermo intero: ${image.alt || 'immagine'}`);
-        const openImage = () => modal.imageViewer.open(image.currentSrc || image.src, image.alt);
+        image.setAttribute(
+          'aria-label',
+          `Apri immagine a schermo intero: ${image.alt || 'immagine'}`
+        );
+        const openImage = () => modal.imageViewer.open(
+          image.currentSrc || image.src,
+          image.alt
+        );
         image.addEventListener('click', openImage);
         image.addEventListener('keydown', ev => {
           if (ev.key === 'Enter' || ev.key === ' ') {
@@ -1165,9 +1988,17 @@ const view = {
       });
 
       if (labels.length) {
-        const labelByToken = new Map(labels.map(label => [label.token, label]));
-        const tokenPattern = new RegExp(`(${labels.map(label => label.token).join('|')})`, 'g');
-        const walker = document.createTreeWalker(elNoteText, NodeFilter.SHOW_TEXT);
+        const labelByToken = new Map(
+          labels.map(label => [label.token, label])
+        );
+        const tokenPattern = new RegExp(
+          `(${labels.map(label => label.token).join('|')})`,
+          'g'
+        );
+        const walker = document.createTreeWalker(
+          elNoteText,
+          NodeFilter.SHOW_TEXT
+        );
         const textNodes = [];
         while (walker.nextNode()) textNodes.push(walker.currentNode);
 
@@ -1175,22 +2006,29 @@ const view = {
           const parts = node.nodeValue.split(tokenPattern);
           if (parts.length === 1) continue;
           const content = document.createDocumentFragment();
+
           parts.forEach((part, index) => {
             if (labelByToken.has(part)) {
               const labelInfo = labelByToken.get(part);
               const tag = labelInfo.tag;
+
               if (node.parentElement?.closest('pre, code')) {
                 content.appendChild(document.createTextNode(tag));
                 return;
               }
+
               const label = document.createElement('button');
               label.type = 'button';
               label.className = `lbl lbl-${helper.getClassfromTag(tag)}`;
               label.dataset.tag = tag;
-              // Use displayTag if it exists (for hashtags), otherwise use the original tag
-              label.textContent = tag === currentTag ? '●' : (labelInfo.displayTag || tag);
+              label.textContent = tag === currentTag
+                ? '●'
+                : labelInfo.displayTag || tag;
               label.title = `Apri ${tag}`;
-              label.addEventListener('click', () => page.home.addTagview(tag));
+              label.addEventListener(
+                'click',
+                () => page.home.addTagview(tag)
+              );
               content.appendChild(label);
             } else if (part) {
               content.appendChild(document.createTextNode(part));
@@ -1199,89 +2037,145 @@ const view = {
           node.replaceWith(content);
         }
       }
-      return elNoteText
+      return elNoteText;
     },
-    async openRelatedNote(noteId, position = 'below', anchorItem = null) {
+
+    async openRelatedNote(
+      noteId,
+      position = 'below',
+      anchorItem = null
+    ) {
       if (!noteId) return;
       try {
         const note = await api.api(`/api/notes/${noteId}`);
         if (!note) return;
         const noteList = anchorItem?.closest('.notesList');
         if (!noteList) return;
-        const elNoteItem = this.genNoteItem(note, noteList.closest('.column-content')?.dataset.key || note.date, position === 'above' ? 'parent' : 'child');
+
+        const elNoteItem = this.genNoteItem(
+          note,
+          noteList.closest('.column-content')?.dataset.key || note.date,
+          position === 'above' ? 'parent' : 'child'
+        );
         if (position === 'above') {
           anchorItem.before(elNoteItem);
         } else {
           anchorItem.after(elNoteItem);
         }
-        elNoteItem.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'nearest'});
+        elNoteItem.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+          inline: 'nearest'
+        });
       } catch (error) {
         console.error('Cannot open related note:', error);
       }
     },
-    makeResizable(colEl, handle) {
-      let startX, startWidth;
 
-      const onMouseDown = (e) => {
+    makeResizable(colEl, handle) {
+      let startX;
+      let startWidth;
+
+      const onMouseDown = e => {
         startX = e.clientX;
         startWidth = colEl.offsetWidth;
-        document.documentElement.addEventListener('mousemove', onMouseMove);
-        document.documentElement.addEventListener('mouseup', onMouseUp);
+        document.documentElement.addEventListener(
+          'mousemove', onMouseMove
+        );
+        document.documentElement.addEventListener(
+          'mouseup', onMouseUp
+        );
         e.preventDefault();
       };
 
-      const onMouseMove = (e) => {
-        const newWidth = Math.min(Math.max(startWidth + (e.clientX - startX), 220), 600);
+      const onMouseMove = e => {
+        const newWidth = Math.min(
+          Math.max(startWidth + (e.clientX - startX), 220),
+          600
+        );
         colEl.style.flex = `0 0 ${newWidth}px`;
       };
 
       const onMouseUp = () => {
-        document.documentElement.removeEventListener('mousemove', onMouseMove);
-        document.documentElement.removeEventListener('mouseup', onMouseUp);
+        document.documentElement.removeEventListener(
+          'mousemove', onMouseMove
+        );
+        document.documentElement.removeEventListener(
+          'mouseup', onMouseUp
+        );
       };
 
       handle.addEventListener('mousedown', onMouseDown);
     },
+
     editedNote(note, previousTags = [], previousDate = note.date) {
       console.log('[fn] editedNote', note);
-      const affectedKeys = new Set([...previousTags, ...note.tags, previousDate, note.date]);
+      const affectedKeys = new Set([
+        ...previousTags,
+        ...note.tags,
+        previousDate,
+        note.date
+      ]);
+
       for (const key of affectedKeys) {
-        if (page.home.filterViews[key] || !model.get('tagsVisible').includes(key)) continue;
-        const noteList = document.querySelector(`.column[data-key="${key}"] .notesList`);
+        if (
+          page.home.filterViews[key] ||
+          !model.get('tagsVisible').includes(key)
+        ) continue;
+
+        const noteList = document.querySelector(
+          `.column[data-key="${key}"] .notesList`
+        );
         if (!noteList) continue;
-        const existing = noteList.querySelector(`.noteItem[data-id="${note.id}"]`);
+
+        const existing = noteList.querySelector(
+          `.noteItem[data-id="${note.id}"]`
+        );
         const belongs = note.tags.includes(key) || note.date === key;
         if (belongs) {
           const updated = this.genNoteItem(note, key);
-          existing ? existing.replaceWith(updated) : noteList.appendChild(updated);
+          existing
+            ? existing.replaceWith(updated)
+            : noteList.appendChild(updated);
         } else {
           existing?.remove();
         }
       }
     }
   },
+
   LeftBar: {
     render() {
       this.el = eid('LeftBar');
       this.el.innerHTML = '';
 
-      // check visibility
       if (!model.get('leftBarVisible')) {
         this.el.style.display = 'none';
         return;
       }
       this.el.style.display = 'block';
-      if(!localStorage.getItem('leftBarWidth')){
-        this.el.style.flex = "0 0 260px";
+      if (!localStorage.getItem('leftBarWidth')) {
+        this.el.style.flex = '0 0 260px';
       } else {
         this.el.style.flex = localStorage.getItem('leftBarWidth');
       }
 
-      this.el.appendChild(view.createEl('div', {id: 'JournalBox', className: "box", style: "flex: 0"}));
-      this.el.appendChild(view.createEl('div', {id: 'TagsBox', className: "box", style: "flex: 1 1 auto; min-height: 0; overflow-y: auto;"}));
-      this.el.appendChild(view.createEl('div', {id: 'ActionRequiredBox', className: "box", style: "flex: 0 0 auto; margin-top: auto;"}));
+      this.el.appendChild(view.createEl('div', {
+        id: 'JournalBox',
+        className: 'box',
+        style: 'flex:0'
+      }));
+      this.el.appendChild(view.createEl('div', {
+        id: 'TagsBox',
+        className: 'box',
+        style: 'flex:1 1 auto; min-height:0; overflow-y:auto;'
+      }));
+      this.el.appendChild(view.createEl('div', {
+        id: 'ActionRequiredBox',
+        className: 'box',
+        style: 'flex:0 0 auto; margin-top:auto;'
+      }));
 
-      // Resizer
       const handle = document.createElement('div');
       handle.id = 'LeftBarResizer';
       handle.style.width = '5px';
@@ -1295,54 +2189,70 @@ const view = {
       this.el.appendChild(handle);
       view.LeftBar.makeResizable(handle);
 
-      view.JournalBox.render()
-      view.TagsBox.render()
-      view.ActionRequiredBox.render()
+      view.JournalBox.render();
+      view.TagsBox.render();
+      view.ActionRequiredBox.render();
     },
 
     makeResizable(handle) {
-      let startX, startWidth;
+      let startX;
+      let startWidth;
 
-      const onMouseDown = (e) => {
+      const onMouseDown = e => {
         startX = e.clientX;
         startWidth = this.el.offsetWidth;
-        document.documentElement.addEventListener('mousemove', onMouseMove);
-        document.documentElement.addEventListener('mouseup', onMouseUp);
+        document.documentElement.addEventListener(
+          'mousemove', onMouseMove
+        );
+        document.documentElement.addEventListener(
+          'mouseup', onMouseUp
+        );
         e.preventDefault();
       };
 
-      const onMouseMove = (e) => {
-        const newWidth = Math.min(Math.max(startWidth + (e.clientX - startX), 180), 500);
-        this.el.style.flex = "0 0 "+ newWidth + 'px';
+      const onMouseMove = e => {
+        const newWidth = Math.min(
+          Math.max(startWidth + (e.clientX - startX), 180),
+          500
+        );
+        this.el.style.flex = '0 0 ' + newWidth + 'px';
       };
 
       const onMouseUp = () => {
         localStorage.setItem('leftBarWidth', this.el.style.flex);
-        document.documentElement.removeEventListener('mousemove', onMouseMove);
-        document.documentElement.removeEventListener('mouseup', onMouseUp);
+        document.documentElement.removeEventListener(
+          'mousemove', onMouseMove
+        );
+        document.documentElement.removeEventListener(
+          'mouseup', onMouseUp
+        );
       };
 
       handle.addEventListener('mousedown', onMouseDown);
     }
   },
+
   TagsBox: {
     render() {
       this.el = eid('TagsBox');
       this.el.innerHTML = '';
-     
-      this.el.appendChild(view.createEl('div', {id: 'TagsBoxSubHeader',
-        style: "margin: 10px 0px;"
+
+      this.el.appendChild(view.createEl('div', {
+        id: 'TagsBoxSubHeader',
+        style: 'margin:10px 0px;'
       }));
-      
-      this.el.appendChild(view.createEl('div', {id: 'TagsBoxList',
-        style: "display:block; width:100%;background:none;border:none;font-size:1.2em;z-index:2;",
+      this.el.appendChild(view.createEl('div', {
+        id: 'TagsBoxList',
+        style:
+          'display:block; width:100%; background:none; border:none; font-size:1.2em; z-index:2;',
         className: 'scrollable'
       }));
 
-      view.TagsBoxSubHeader.render()
-      view.TagsBoxList.render()
+      view.TagsBoxSubHeader.render();
+      view.TagsBoxList.render();
     }
   },
+
   TagsBoxSubHeader: {
     render() {
       console.log('[fn] TagsBoxSubHeader.render()');
@@ -1352,11 +2262,15 @@ const view = {
       const elTagsTasks = document.createElement('button');
       elTagsTasks.type = 'button';
       elTagsTasks.id = 'tagsTasksToggle';
-      elTagsTasks.className = `btnp primary${model.get('tagsBox_task') ? ' active' : ''}`;
+      elTagsTasks.className =
+        `btnp primary${model.get('tagsBox_task') ? ' active' : ''}`;
       elTagsTasks.textContent = '!';
       elTagsTasks.title = 'Mostra/nascondi tag evento';
       elTagsTasks.setAttribute('aria-label', elTagsTasks.title);
-      elTagsTasks.setAttribute('aria-pressed', String(model.get('tagsBox_task')));
+      elTagsTasks.setAttribute(
+        'aria-pressed',
+        String(model.get('tagsBox_task'))
+      );
       elTagsTasks.onclick = ev => {
         ev.preventDefault();
         elTagsTasks.classList.toggle('active');
@@ -1367,11 +2281,18 @@ const view = {
       const elTagsToggleProjects = document.createElement('button');
       elTagsToggleProjects.type = 'button';
       elTagsToggleProjects.id = 'tagsProjectToggle';
-      elTagsToggleProjects.className = `btnp primary${model.get('tagsBox_projects') ? ' active' : ''}`;
+      elTagsToggleProjects.className =
+        `btnp primary${model.get('tagsBox_projects') ? ' active' : ''}`;
       elTagsToggleProjects.textContent = '#';
       elTagsToggleProjects.title = 'Mostra/nascondi tag evento';
-      elTagsToggleProjects.setAttribute('aria-label', elTagsToggleProjects.title);
-      elTagsToggleProjects.setAttribute('aria-pressed', String(model.get('tagsBox_projects')));
+      elTagsToggleProjects.setAttribute(
+        'aria-label',
+        elTagsToggleProjects.title
+      );
+      elTagsToggleProjects.setAttribute(
+        'aria-pressed',
+        String(model.get('tagsBox_projects'))
+      );
       elTagsToggleProjects.onclick = ev => {
         ev.preventDefault();
         elTagsToggleProjects.classList.toggle('active');
@@ -1382,11 +2303,18 @@ const view = {
       const elTagsToggleEvents = document.createElement('button');
       elTagsToggleEvents.type = 'button';
       elTagsToggleEvents.id = 'tagsEventsToggle';
-      elTagsToggleEvents.className = `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
+      elTagsToggleEvents.className =
+        `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
       elTagsToggleEvents.textContent = '>';
       elTagsToggleEvents.title = 'Mostra/nascondi tag evento';
-      elTagsToggleEvents.setAttribute('aria-label', elTagsToggleEvents.title);
-      elTagsToggleEvents.setAttribute('aria-pressed', String(model.get('tagsBox_events')));
+      elTagsToggleEvents.setAttribute(
+        'aria-label',
+        elTagsToggleEvents.title
+      );
+      elTagsToggleEvents.setAttribute(
+        'aria-pressed',
+        String(model.get('tagsBox_events'))
+      );
       elTagsToggleEvents.onclick = ev => {
         ev.preventDefault();
         elTagsToggleEvents.classList.toggle('active');
@@ -1397,11 +2325,18 @@ const view = {
       const elTagsTogglePersons = document.createElement('button');
       elTagsTogglePersons.type = 'button';
       elTagsTogglePersons.id = 'tagsPersonsToggle';
-      elTagsTogglePersons.className = `btnp primary${model.get('tagsBox_persons') ? ' active' : ''}`;
+      elTagsTogglePersons.className =
+        `btnp primary${model.get('tagsBox_persons') ? ' active' : ''}`;
       elTagsTogglePersons.textContent = '@';
       elTagsTogglePersons.title = 'Mostra/nascondi tag persone';
-      elTagsTogglePersons.setAttribute('aria-label', elTagsTogglePersons.title);
-      elTagsTogglePersons.setAttribute('aria-pressed', String(model.get('tagsBox_persons')));
+      elTagsTogglePersons.setAttribute(
+        'aria-label',
+        elTagsTogglePersons.title
+      );
+      elTagsTogglePersons.setAttribute(
+        'aria-pressed',
+        String(model.get('tagsBox_persons'))
+      );
       elTagsTogglePersons.onclick = ev => {
         ev.preventDefault();
         elTagsTogglePersons.classList.toggle('active');
@@ -1412,11 +2347,18 @@ const view = {
       const elTagsToggleGeneric = document.createElement('button');
       elTagsToggleGeneric.type = 'button';
       elTagsToggleGeneric.id = 'tagsGenericToggle';
-      elTagsToggleGeneric.className = `btnp primary${model.get('tagsBox_generic') ? ' active' : ''}`;
+      elTagsToggleGeneric.className =
+        `btnp primary${model.get('tagsBox_generic') ? ' active' : ''}`;
       elTagsToggleGeneric.textContent = '+';
       elTagsToggleGeneric.title = 'Mostra/nascondi tag generici';
-      elTagsToggleGeneric.setAttribute('aria-label', elTagsToggleGeneric.title);
-      elTagsToggleGeneric.setAttribute('aria-pressed', String(model.get('tagsBox_generic')));
+      elTagsToggleGeneric.setAttribute(
+        'aria-label',
+        elTagsToggleGeneric.title
+      );
+      elTagsToggleGeneric.setAttribute(
+        'aria-pressed',
+        String(model.get('tagsBox_generic'))
+      );
       elTagsToggleGeneric.onclick = ev => {
         ev.preventDefault();
         elTagsToggleGeneric.classList.toggle('active');
@@ -1426,6 +2368,7 @@ const view = {
       return this.el;
     }
   },
+
   TagsBoxList: {
     render() {
       console.log('[fn] TagsBoxList.render()');
@@ -1433,10 +2376,11 @@ const view = {
       this.el.innerHTML = '';
 
       const tagCategories = ['Projects', 'Events', 'Generic', 'Persons'];
-      // const tagPersons = ['Persons'];
       const sectionsDiv = {
-        'Tags': { el: document.createElement('div'), filter: tagCategories}
-        // 'Persons': { el: document.createElement('div'), filter: tagPersons }
+        Tags: {
+          el: document.createElement('div'),
+          filter: tagCategories
+        }
       };
       const modelTagsBoxTask = model.get('tagsBox_task');
       const tags = model.get('tags');
@@ -1450,10 +2394,13 @@ const view = {
         title.className = 'sectionTitle';
         title.textContent = 'Senza tag: ';
         section.appendChild(title);
+
         const taskList = document.createElement('ul');
         taskList.className = 'tagList-tree';
         untaggedTasks.forEach(task => {
-          taskList.appendChild(this.createTaskElement(task, modelTagsBoxTask));
+          taskList.appendChild(
+            this.createTaskElement(task, modelTagsBoxTask)
+          );
         });
         section.appendChild(taskList);
         this.el.appendChild(section);
@@ -1461,45 +2408,60 @@ const view = {
 
       Object.entries(sectionsDiv).forEach(([secName, {el, filter}]) => {
         el.className = 'tagSection';
-        let title = document.createElement('div');
+        const title = document.createElement('div');
         title.className = 'sectionTitle';
         title.textContent = secName + ': ';
         el.appendChild(title);
-        let tagTree = businessLogic.buildTagTree(tags.filter(t => filter.includes(t.category)), tasks);
-        el.appendChild(this.createTreeWrap(tagTree, {
-          'Projects': model.get('tagsBox_projects'),
-          'Events': model.get('tagsBox_events'),
-          'Generic': model.get('tagsBox_generic'),
-          'Persons': model.get('tagsBox_persons')
-        }, modelTagsBoxTask, 1));
+
+        const tagTree = businessLogic.buildTagTree(
+          tags.filter(t => filter.includes(t.category)),
+          tasks
+        );
+        el.appendChild(this.createTreeWrap(
+          tagTree,
+          {
+            Projects: model.get('tagsBox_projects'),
+            Events: model.get('tagsBox_events'),
+            Generic: model.get('tagsBox_generic'),
+            Persons: model.get('tagsBox_persons')
+          },
+          modelTagsBoxTask,
+          1
+        ));
         this.el.appendChild(el);
       });
       return this.el;
     },
+
     createTaskElement(task, tagsTaskActive) {
       const li = document.createElement('li');
-      if(!tagsTaskActive) {
-        li.style.display = "none";
+      if (!tagsTaskActive) {
+        li.style.display = 'none';
       }
-      li.style.listStyle = 'none'; // Rimuove il proiettile dell'elemento di lista
-      li.className = 'tagList-task task-'+task.task;
-      
+      li.style.listStyle = 'none';
+      li.className = 'tagList-task task-' + task.task;
+
       const header = document.createElement('div');
       header.style.display = 'flex';
       header.style.alignItems = 'center';
 
-      // Nome del tag e funzionalità di click
       const span = document.createElement('span');
       const hasTag = Boolean(task.firstTag);
       const hasPanel = hasTag || Boolean(task.date);
-      span.textContent = hasTag ? task.text.replace(task.firstTag, '●') : task.text;
+      span.textContent = hasTag
+        ? task.text.replace(task.firstTag, '●')
+        : task.text;
       span.className = 'tag-task-text';
       span.title = task.text;
       span.style.flex = '1';
+
       if (hasPanel) {
         span.setAttribute('role', 'button');
         span.tabIndex = 0;
-        span.setAttribute('aria-label', `Apri la nota del task: ${task.text}`);
+        span.setAttribute(
+          'aria-label',
+          `Apri la nota del task: ${task.text}`
+        );
         span.style.cursor = 'pointer';
         span.onclick = () => page.home.focusTask(task);
         span.onkeydown = ev => {
@@ -1509,149 +2471,161 @@ const view = {
           }
         };
       }
+
       header.appendChild(span);
       li.appendChild(header);
       return li;
     },
+
     createTreeWrap(tagTree, tagsEyeActive, tagsTaskActive, depth) {
-      let ul = document.createElement('ul');
+      const ul = document.createElement('ul');
       ul.className = 'tagList-tree';
       tagTree.forEach(tag => {
-        ul.appendChild(this.createTreeElement(tag, tagsEyeActive, tagsTaskActive, depth));
+        ul.appendChild(this.createTreeElement(
+          tag,
+          tagsEyeActive,
+          tagsTaskActive,
+          depth
+        ));
       });
       return ul;
     },
+
     hasDiscendentTask(tag) {
-      if (tag.tasks.length != 0)
-        return true;
+      if (tag.tasks.length != 0) return true;
       return tag.children.some(child => this.hasDiscendentTask(child));
     },
+
     createTreeElement(tag, tagsEyeActive, tagsTaskActive, depth) {
       const li = document.createElement('li');
       li.style.listStyle = 'none';
-      if(tagsEyeActive[tag.category] || tag.treed || this.hasDiscendentTask(tag)) {
-      } else {
-        li.style.display = "none";
+
+      if (
+        !tagsEyeActive[tag.category] &&
+        !tag.treed &&
+        !this.hasDiscendentTask(tag)
+      ) {
+        li.style.display = 'none';
       }
-      li.className=`expanded tree-depth-${depth}`;
+
+      li.className = `expanded tree-depth-${depth}`;
       const header = document.createElement('div');
-      header.style.display = 'flex';
-      header.style.alignItems = 'center';
-      header.style.padding = "2px 4px";
-      header.style.background = "#fff";
-      header.style.borderWidth = "2px";
-      header.style.borderStyle = "solid";
-      header.className = {'Projects': 'color-border-green-5', 'Events': 'color-border-blue-5', 'Generic': 'color-border-purple-5', 'Persons': 'color-border-orange-5'}[tag.category];
-      header.style.borderRadius = "2px";
+      header.className = "tagtree-box " +tag.category;
+      header.style.borderRadius = '2px';
+
       const hasChildren = tag.children && tag.children.length > 0;
-      // Toggle button per espandere/contrarre
-      const toggleBtn = document.createElement('i');
-      toggleBtn.className = hasChildren ? 'fa-fw fa-regular fa-square-caret-down color-blue-5' : 'fa-fw fa-regular fa-square color-blue-5';
-      toggleBtn.style.cursor = hasChildren ? 'pointer' : 'default';
-      toggleBtn.style.marginRight = '5px';
-      toggleBtn.onclick = () => {
-        if (hasChildren) {
-          li.classList.toggle('expanded');
-          if (li.classList.contains('expanded')) {
-            toggleBtn.classList.remove('fa-square-caret-right');
-            toggleBtn.classList.add('fa-square-caret-down');
+      header.appendChild(view.createEl('i', {
+        className: hasChildren
+          ? 'caret-icon fa-fw fa-regular fa-square-caret-down'
+          : 'caret-icon fa-fw fa-regular fa-square',
+          style: {
+            marginRight: '5px',
+            cursor: hasChildren ? 'pointer' : 'default',
+          },
+          onclick: () => {
+            if (hasChildren) {
+              li.classList.toggle('expanded');
+              if (li.classList.contains('expanded')) {
+                toggleBtn.classList.remove('fa-square-caret-right');
+                toggleBtn.classList.add('fa-square-caret-down');
+              } else {
+                toggleBtn.classList.remove('fa-square-caret-down');
+                toggleBtn.classList.add('fa-square-caret-right');
+              }
+            }
           }
-          else {
-            toggleBtn.classList.remove('fa-square-caret-down');
-            toggleBtn.classList.add('fa-square-caret-right');
-          }
+      }));
+
+      header.appendChild(view.createEl('span', {
+        className: "tagtree-text",
+        textContent: tag.name,
+        style: {
+          flex: '1',
+          cursor: 'pointer',
+          fontWeight: '600'
+        },
+        onclick: async () => await page.home.addTagview(tag.name)
+      }));
+
+      header.appendChild(view.createEl('button', {
+        className: tag.treed ? 'btn small primary transparent' : 'btn small muted transparent',
+        innerHTML: tag.treed ? '<i class="fa-xs fa-fw fa-solid fa-eye fa-middle"></i>' : '<i class="fa-xs fa-fw fa-solid fa-eye-slash fa-middle"></i>',
+        onclick: async ev => {
+          ev.stopPropagation();
+          const updated = await api.api(
+            `/api/tags/${tag.category}/${tag.name.substring(1)}`,
+            {
+              method: 'PATCH',
+              body: {
+                treed: !tag.treed,
+                parent: tag.parent || '',
+                content: tag.content || ''
+              }
+            }
+          );
+          model.set('tags', tags => {
+            const index = tags.findIndex(
+              item => item.name === updated.name
+            );
+            if (index !== -1) tags[index] = updated;
+            return tags;
+          });
         }
-      };
-      header.appendChild(toggleBtn);
+      }));
 
-      // Nome del tag e funzionalità di click
-      const span = document.createElement('span');
-      span.textContent = tag.name;
-      span.style.flex = '1';
-      span.style.cursor = 'pointer';
-      span.style.fontWeight = '600';
-      span.className = {'Projects': 'color-green-5', 'Events': 'color-blue-5', 'Generic': 'color-purple-5', 'Persons': 'color-orange-5'}[tag.category];
-      span.onclick = async () => await page.home.addTagview(tag.name);
-      header.appendChild(span);
+      header.appendChild(view.createEl('button', {
+        className: 'btn small muted transparent',
+        innerHTML:
+          '<i class="fa-xs fa-fw fa-solid fa-pencil fa-middle"></i>',
+        onclick: async ev => {
+          ev.stopPropagation();
+          modal.editTreeTagModal.render(tag.name);
+        }
+      }));
 
-      // Bottoni aggiuntivi (occhio e matita)
-      // Eye button for visibility toggle
-      const eyeBtn = document.createElement('i');
-      eyeBtn.className = tag.treed ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
-      eyeBtn.title = tag.treed ? 'Visible in tree' : 'Hidden from tree';
-      eyeBtn.style.color = tag.treed ? '#2e7d32' : '#c62828';
-      eyeBtn.style.marginLeft = '8px';
-      eyeBtn.style.cursor = 'pointer';
-      eyeBtn.onclick = async (ev) => {
-        ev.stopPropagation();
-        const updated = await api.api(`/api/tags/${tag.category}/${tag.name.substring(1)}`, {
-          method: "PATCH",
-          body: {
-            treed: !tag.treed,
-            parent: tag.parent || '',
-            content: tag.content || ''
-          }
-        });
-        model.set('tags', (tags) => { 
-          const index = tags.findIndex(item => item['name'] === updated['name']);
-          if (index !== -1) tags[index] = updated;
-          return tags;
-        });
-      };
-      header.appendChild(eyeBtn);
-
-      // Tree edit button
-      const treeEdit = document.createElement('i');
-      treeEdit.className = 'fa-solid fa-pencil';
-      treeEdit.style.color = '#666';
-      treeEdit.style.marginLeft = '8px';
-      treeEdit.style.cursor = 'pointer';
-      treeEdit.title = `Tree "${tag.name}"`;
-      treeEdit.onclick = async (ev) => {
-        ev.stopPropagation();
-        modal.editTreeTagModal.render(tag.name);
-      };
-      header.appendChild(treeEdit);
-
-      // Properties button
-      const propsBtn = document.createElement('i');
-      propsBtn.className = 'fa-solid fa-gear';
-      propsBtn.style.color = '#666';
-      propsBtn.style.marginLeft = '8px';
-      propsBtn.style.cursor = 'pointer';
-      propsBtn.title = `Properties for "${tag.name}"`;
-      propsBtn.onclick = async (ev) => {
-        ev.stopPropagation();
-        modal.editTagPropertiesModal.render(tag.name);
-      };
-      header.appendChild(propsBtn);
+      header.appendChild(view.createEl('button', {
+        className: 'btn small muted transparent',
+        innerHTML:
+          '<i class="fa-xs fa-fw fa-solid fa-gear fa-middle"></i>',
+        onclick: async ev => {
+          ev.stopPropagation();
+          modal.editTagPropertiesModal.render(tag.name);
+        }
+      }));
+      
 
       li.appendChild(header);
       tag.tasks.forEach(task => {
-        li.appendChild(this.createTaskElement(task, tagsTaskActive, depth+1));
-      })
-      // Crea la lista dei figli (se esistono)
+        li.appendChild(
+          this.createTaskElement(task, tagsTaskActive, depth + 1)
+        );
+      });
+
       if (hasChildren) {
-        li.appendChild(this.createTreeWrap(tag.children, tagsEyeActive, tagsTaskActive, depth+1));
+        li.appendChild(this.createTreeWrap(
+          tag.children,
+          tagsEyeActive,
+          tagsTaskActive,
+          depth + 1
+        ));
       }
       return li;
     }
-
   },
+
   ActionRequiredBox: {
     async render() {
       console.log('[fn] ActionRequiredBox.render()');
       this.el = eid('ActionRequiredBox');
       this.el.innerHTML = '';
-      
-      // Title
+
       const header = document.createElement('div');
       header.className = 'action-required-header';
+
       const title = document.createElement('h3');
       title.textContent = 'Action Required';
       title.style.color = '#856404';
-      
-      // Count badge
+
       const countBadge = document.createElement('span');
       countBadge.className = 'badge bg-warning text-dark';
       const actionItems = businessLogic.getActionRequiredItems();
@@ -1670,27 +2644,29 @@ const view = {
           Events: 'event',
           Generic: 'generic'
         }[category] || 'other';
-        item.className = `action-required-tag action-required-tag-${categoryClass}`;
+
+        item.className =
+          `action-required-tag action-required-tag-${categoryClass}`;
         item.textContent = tag;
         item.title = `Associa ${tag} a un parent`;
         item.onclick = () => modal.editTreeTagModal.render(tag);
         this.el.appendChild(item);
       });
-      
       return this.el;
     }
   },
+
   JournalBox: {
     async render() {
       console.log('[fn] JournalBox.render()');
       this.el = eid('JournalBox');
       this.el.innerHTML = '';
-      
-      /* Date variables */
-      this.calendarYear = this.calendarYear || new Date().getFullYear();
-      this.calendarMonth = (this.calendarMonth !== undefined) ? this.calendarMonth : new Date().getMonth();
 
-      // Header with month navigation
+      this.calendarYear = this.calendarYear || new Date().getFullYear();
+      this.calendarMonth = this.calendarMonth !== undefined
+        ? this.calendarMonth
+        : new Date().getMonth();
+
       const elJournalHeader = document.createElement('div');
       elJournalHeader.className = 'calendar-header mini-calendar-header';
 
@@ -1705,10 +2681,15 @@ const view = {
         }
         this.render();
       };
-      const numNotesOfMonth = await api.api(`/api/notes/${this.calendarYear}/${String(this.calendarMonth + 1).padStart(2, '0')}/count`);
+
+      const numNotesOfMonth = await api.api(
+        `/api/notes/${this.calendarYear}/${String(this.calendarMonth + 1).padStart(2, '0')}/count`
+      );
       console.debug('numNotesOfMonth', numNotesOfMonth);
-      const numNotesOfMonthMax = Math.max(...Object.values(numNotesOfMonth));
-      
+      const numNotesOfMonthMax = Math.max(
+        ...Object.values(numNotesOfMonth)
+      );
+
       const elJournalNextBtn = document.createElement('button');
       elJournalNextBtn.className = 'calendar-nav-btn';
       elJournalNextBtn.textContent = '›';
@@ -1723,22 +2704,21 @@ const view = {
 
       const elJournalMonthLabel = document.createElement('span');
       elJournalMonthLabel.className = 'calendar-month-label';
-      elJournalMonthLabel.textContent = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}`;
+      elJournalMonthLabel.textContent =
+        `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}`;
 
       elJournalHeader.appendChild(elJournalPrevBtn);
       elJournalHeader.appendChild(elJournalMonthLabel);
       elJournalHeader.appendChild(elJournalNextBtn);
       this.el.appendChild(elJournalHeader);
 
-      // Calendar grid
       const elJournalTable = document.createElement('table');
       elJournalTable.className = 'calendar-table mini-calendar';
 
-      // Weekday headers
       const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
       const elJournalThead = document.createElement('thead');
       const elJournalTrHead = document.createElement('tr');
-      for(const day of weekdays) {
+      for (const day of weekdays) {
         const elJournalTrHeadTh = document.createElement('th');
         elJournalTrHeadTh.textContent = day;
         elJournalTrHead.appendChild(elJournalTrHeadTh);
@@ -1746,19 +2726,23 @@ const view = {
       elJournalThead.appendChild(elJournalTrHead);
       elJournalTable.appendChild(elJournalThead);
 
-      // Days
-      let firstDay = new Date(this.calendarYear, this.calendarMonth, 1).getDay();
-      firstDay = (firstDay === 0) ? 6 : firstDay - 1;
-      const daysInMonth = new Date(this.calendarYear, this.calendarMonth + 1, 0).getDate();
+      let firstDay = new Date(
+        this.calendarYear,
+        this.calendarMonth,
+        1
+      ).getDay();
+      firstDay = firstDay === 0 ? 6 : firstDay - 1;
+      const daysInMonth = new Date(
+        this.calendarYear,
+        this.calendarMonth + 1,
+        0
+      ).getDate();
 
-      // gather tasks from model (already loaded by page)
       const tasks = model.get('tasks') || [];
-
       const elJournalTbody = document.createElement('tbody');
       let elJournalTrBody = document.createElement('tr');
       let dayCount = 0;
 
-      // Fill empty cells before first day
       for (let i = 0; i < firstDay; i++) {
         const elJournalTdBody = document.createElement('td');
         elJournalTdBody.textContent = '';
@@ -1766,33 +2750,42 @@ const view = {
         dayCount++;
       }
 
-      // Fill days
       for (let d = 1; d <= daysInMonth; d++) {
         if (dayCount % 7 === 0 && dayCount !== 0) {
           elJournalTbody.appendChild(elJournalTrBody);
           elJournalTrBody = document.createElement('tr');
         }
+
         const elJournalTdBody = document.createElement('td');
         elJournalTdBody.className = 'calendar-cell';
-        const dateStr = `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-        const intensity = numNotesOfMonthMax > 0 ? Math.min(8, Math.ceil((numNotesOfMonth[dateStr] || 0) / (numNotesOfMonthMax / 8))) : 0;
-        console.debug(`Date ${dateStr} has ${numNotesOfMonth[dateStr] || 0} notes, intensity ${intensity}`);
+        const dateStr =
+          `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const intensity = numNotesOfMonthMax > 0
+          ? Math.min(
+              8,
+              Math.ceil(
+                (numNotesOfMonth[dateStr] || 0) /
+                (numNotesOfMonthMax / 8)
+              )
+            )
+          : 0;
+
+        console.debug(
+          `Date ${dateStr} has ${numNotesOfMonth[dateStr] || 0} notes, intensity ${intensity}`
+        );
         elJournalTdBody.classList.add(`intensity-${intensity}`);
         elJournalTdBody.style.position = 'relative';
 
-        // Day number element
         const dayNumEl = document.createElement('div');
         dayNumEl.className = 'mini-calendar-day-number';
         dayNumEl.textContent = d;
         elJournalTdBody.appendChild(dayNumEl);
 
-        // Mark weekends (Saturday: 5, Sunday: 6)
-        const weekdayIndex = (dayCount % 7);
+        const weekdayIndex = dayCount % 7;
         if (weekdayIndex === 5 || weekdayIndex === 6) {
           elJournalTdBody.classList.add('calendar-weekend');
         }
 
-        // Highlight today
         const today = new Date();
         const isToday =
           this.calendarYear === today.getFullYear() &&
@@ -1802,7 +2795,6 @@ const view = {
           elJournalTdBody.classList.add('calendar-today');
         }
 
-        // Red dot if there are tasks on that day
         const tasksForDay = tasks.filter(t => t.duedate === dateStr);
         if (tasksForDay.length > 0) {
           const dot = document.createElement('div');
@@ -1818,7 +2810,6 @@ const view = {
         dayCount++;
       }
 
-      // Fill remaining cells
       while (dayCount % 7 !== 0) {
         const elJournalTdBody = document.createElement('td');
         elJournalTdBody.textContent = '';
@@ -1827,48 +2818,79 @@ const view = {
       }
       elJournalTbody.appendChild(elJournalTrBody);
       elJournalTable.appendChild(elJournalTbody);
-
       this.el.appendChild(elJournalTable);
     }
   },
+
   Calendar: {
     render() {
       this.el = eid('CalendarMain');
       this.el.innerHTML = '';
       this.el.style.flex = '1';
 
-      this.el_tb = this.el.appendChild(view.createEl('div', {id: 'TopBar'}));
+      this.el_tb = this.el.appendChild(
+        view.createEl('div', {id: 'TopBar'})
+      );
       view.TopBar.render();
-      
-      this.el_cw = this.el.appendChild(view.createEl('div', {id: 'CalendarWrap'}));
 
-      // initialize current view month/year if not present
+      this.el_cw = this.el.appendChild(
+        view.createEl('div', {id: 'CalendarWrap'})
+      );
+
       this.calendarYear = this.calendarYear || new Date().getFullYear();
-      this.calendarMonth = (this.calendarMonth !== undefined) ? this.calendarMonth : new Date().getMonth();
+      this.calendarMonth = this.calendarMonth !== undefined
+        ? this.calendarMonth
+        : new Date().getMonth();
 
-      // Header
       const header = document.createElement('div');
       header.className = 'calendar-header';
-      const prevBtn = document.createElement('button'); prevBtn.className = 'calendar-nav-btn'; prevBtn.textContent = '‹';
-      prevBtn.onclick = () => { this.calendarMonth--; if(this.calendarMonth < 0){ this.calendarMonth = 11; this.calendarYear--; } this.render(); };
-      const nextBtn = document.createElement('button'); nextBtn.className = 'calendar-nav-btn'; nextBtn.textContent = '›';
-      nextBtn.onclick = () => { this.calendarMonth++; if(this.calendarMonth > 11){ this.calendarMonth = 0; this.calendarYear++; } this.render(); };
-      const monthLabel = document.createElement('span'); monthLabel.className = 'calendar-month-label';
-      monthLabel.textContent = `${this.calendarYear}-${String(this.calendarMonth+1).padStart(2,'0')}`;
-      header.appendChild(prevBtn); header.appendChild(monthLabel); header.appendChild(nextBtn);
+
+      const prevBtn = document.createElement('button');
+      prevBtn.className = 'calendar-nav-btn';
+      prevBtn.textContent = '‹';
+      prevBtn.onclick = () => {
+        this.calendarMonth--;
+        if (this.calendarMonth < 0) {
+          this.calendarMonth = 11;
+          this.calendarYear--;
+        }
+        this.render();
+      };
+
+      const nextBtn = document.createElement('button');
+      nextBtn.className = 'calendar-nav-btn';
+      nextBtn.textContent = '›';
+      nextBtn.onclick = () => {
+        this.calendarMonth++;
+        if (this.calendarMonth > 11) {
+          this.calendarMonth = 0;
+          this.calendarYear++;
+        }
+        this.render();
+      };
+
+      const monthLabel = document.createElement('span');
+      monthLabel.className = 'calendar-month-label';
+      monthLabel.textContent =
+        `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}`;
+
+      header.appendChild(prevBtn);
+      header.appendChild(monthLabel);
+      header.appendChild(nextBtn);
       this.el_cw.appendChild(header);
 
-      // gather tasks
       const tasks = model.get('tasks') || [];
+      const monthStart = new Date(
+        this.calendarYear,
+        this.calendarMonth,
+        1
+      );
+      const monthEnd = new Date(
+        this.calendarYear,
+        this.calendarMonth + 1,
+        0
+      );
 
-      // compute month boundaries
-      const monthStart = new Date(this.calendarYear, this.calendarMonth, 1);
-      const monthEnd = new Date(this.calendarYear, this.calendarMonth + 1, 0);
-
-      // partition tasks:
-      //  - aboveTasks: duedate === null/undefined OR duedate < monthStart
-      //  - belowTasks: duedate > monthEnd
-      //  - in-month tasks will be shown inside calendar cells as before
       const aboveTasks = [];
       const belowTasks = [];
       tasks.forEach(t => {
@@ -1876,10 +2898,8 @@ const view = {
           aboveTasks.push(t);
           return;
         }
-        // robust parse YYYY-MM-DD -> local date
         const parts = String(t.duedate).split('-').map(Number);
         if (parts.length !== 3 || parts.some(isNaN)) {
-          // treat unparseable as unscheduled/previous
           aboveTasks.push(t);
           return;
         }
@@ -1888,7 +2908,6 @@ const view = {
         else if (dt > monthEnd) belowTasks.push(t);
       });
 
-      // helper to build list block (used for above and below)
       const buildListBlock = (title, list) => {
         const wrap = document.createElement('div');
         wrap.className = 'calendar-extras';
@@ -1897,6 +2916,7 @@ const view = {
         h.style.margin = '6px 0';
         h.textContent = `${title} (${list.length})`;
         wrap.appendChild(h);
+
         if (list.length === 0) {
           const empty = document.createElement('div');
           empty.style.color = '#888';
@@ -1905,188 +2925,349 @@ const view = {
           wrap.appendChild(empty);
           return wrap;
         }
+
         const listWrap = document.createElement('div');
         listWrap.style.display = 'flex';
         listWrap.style.flexDirection = 'column';
+
         list.forEach(n => {
-          let taskClass = ''
-          if(n.task != null && n.task != '') { taskClass = 'task-'+n.task }
+          let taskClass = '';
+          if (n.task != null && n.task != '') {
+            taskClass = 'task-' + n.task;
+          }
+
           const elNoteItem = view.createEl('div', {
             className: `noteItem ${taskClass}`,
             dataset: {id: n.id}
-          })
-          const elNoteDate = elNoteItem.appendChild(view.createEl('div', {
-            className: 'noteDate flex-col',
-            innerHTML: new Date(n.date).toLocaleString('default', { month: 'short' }) + '-' + n.date.substring(8,10) + 
-                    (n.duedate ? '<br><span class="color-purple-4">' + new Date(n.duedate).toLocaleString('default', { month: 'short' }) + '-' + n.duedate.substring(8,10) + '</span>' : ''  )
-          }));
-          const elNoteDays = elNoteItem.appendChild(view.createEl('div', {
-            className: 'noteDays flex-col',
-            innerHTML: helper.diffToToday(new Date(n.date)) + 
-                    (n.duedate ? '<br><span class="color-purple-4">' + helper.diffToToday(new Date(n.duedate)) + '</span>': '' )
-          }));
+          });
+
+          const elNoteDate = elNoteItem.appendChild(
+            view.createEl('div', {
+              className: 'noteDate flex-col',
+              innerHTML:
+                new Date(n.date).toLocaleString(
+                  'default', {month: 'short'}
+                ) +
+                '-' + n.date.substring(8, 10) +
+                (
+                  n.duedate
+                    ? '<br><span class="color-purple-4">' +
+                      new Date(n.duedate).toLocaleString(
+                        'default', {month: 'short'}
+                      ) +
+                      '-' + n.duedate.substring(8, 10) + '</span>'
+                    : ''
+                )
+            })
+          );
+
+          const elNoteDays = elNoteItem.appendChild(
+            view.createEl('div', {
+              className: 'noteDays flex-col',
+              innerHTML:
+                helper.diffToToday(new Date(n.date)) +
+                (
+                  n.duedate
+                    ? '<br><span class="color-purple-4">' +
+                      helper.diffToToday(new Date(n.duedate)) +
+                      '</span>'
+                    : ''
+                )
+            })
+          );
+
           {
-            const elReplyIndicators = elNoteItem.appendChild(view.createEl('div', {
-              className: 'noteReplyIndicators flex-col',
-              style: 'display:flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 1px; padding-left: 2px;'
-            }));
-            if (!elNoteItem.classList.contains('noteItem-related-parent')) {
-              elReplyIndicators.appendChild(view.createEl('button', {
-                className: n.replied_to ? 'btn primary small transparent' : 'btn muted small transparent',
-                innerHTML: '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
-                title: n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
-                'aria-label': n.replied_to ? 'Risponde a un\'altra nota' : 'Nessuna nota a cui risponde',
-                tabindex: n.replied_to ? 0 : -1,
-                onclick: () => { if (n.replied_to) view.Main.openRelatedNote(n.replied_to, 'above', elNoteItem); },
-              }));
+            const elReplyIndicators = elNoteItem.appendChild(
+              view.createEl('div', {
+                className: 'noteReplyIndicators flex-col',
+                style:
+                  'display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:1px; padding-left:2px;'
+              })
+            );
+
+            if (
+              !elNoteItem.classList.contains('noteItem-related-parent')
+            ) {
+              elReplyIndicators.appendChild(
+                view.createEl('button', {
+                  className: n.replied_to
+                    ? 'btn primary small transparent'
+                    : 'btn muted small transparent',
+                  innerHTML:
+                    '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
+                  title: n.replied_to
+                    ? 'Risponde a un\'altra nota'
+                    : 'Nessuna nota a cui risponde',
+                  'aria-label': n.replied_to
+                    ? 'Risponde a un\'altra nota'
+                    : 'Nessuna nota a cui risponde',
+                  tabindex: n.replied_to ? 0 : -1,
+                  onclick: () => {
+                    if (n.replied_to) {
+                      view.Main.openRelatedNote(
+                        n.replied_to,
+                        'above',
+                        elNoteItem
+                      );
+                    }
+                  }
+                })
+              );
             }
-            if (!elNoteItem.classList.contains('noteItem-related-child')) {
-              elReplyIndicators.appendChild(view.createEl('button', {
-                className: n.reply ? 'btn primary small transparent' : 'btn muted small transparent',
-                innerHTML: '<i class="fa-solid fa-caret-down fa-2xs fa-fw"></i>',
-                title: n.reply ? 'Ha una risposta' : 'Nessuna risposta',
-                'aria-label': n.reply ? 'Ha una risposta' : 'Nessuna risposta',
-                tabindex: n.reply ? 0 : -1,
-                onclick: (ev) => {
-                  if (n.reply) {ev.stopPropagation(); view.Main.openRelatedNote(n.reply, 'below', elNoteItem);}
-                  else { ev.stopPropagation(); view.EditorWrap.startReply(n);}
-                },
-              }));
+
+            if (
+              !elNoteItem.classList.contains('noteItem-related-child')
+            ) {
+              elReplyIndicators.appendChild(
+                view.createEl('button', {
+                  className: n.reply
+                    ? 'btn primary small transparent'
+                    : 'btn muted small transparent',
+                  innerHTML:
+                    '<i class="fa-solid fa-caret-down fa-2xs fa-fw"></i>',
+                  title: n.reply
+                    ? 'Ha una risposta'
+                    : 'Nessuna risposta',
+                  'aria-label': n.reply
+                    ? 'Ha una risposta'
+                    : 'Nessuna risposta',
+                  tabindex: n.reply ? 0 : -1,
+                  onclick: ev => {
+                    if (n.reply) {
+                      ev.stopPropagation();
+                      view.Main.openRelatedNote(
+                        n.reply,
+                        'below',
+                        elNoteItem
+                      );
+                    } else {
+                      ev.stopPropagation();
+                      view.EditorWrap.startReply(n);
+                    }
+                  }
+                })
+              );
             }
           }
+
           const elNoteText = elNoteItem
-            .appendChild(view.createEl('div', {style: {flex: '1', display: 'flex', flexDirection: 'column', paddingLeft: '5px'}}))
-            .appendChild(view.Main.genNoteText(n, ''))
+            .appendChild(view.createEl('div', {
+              style: {
+                flex: '1',
+                display: 'flex',
+                flexDirection: 'column',
+                paddingLeft: '5px'
+              }
+            }))
+            .appendChild(view.Main.genNoteText(n, ''));
 
-
-          // const tEl = document.createElement('div');
-          // tEl.className = `tagList-task task-${t.task || 'low'}`;
-          // tEl.style.padding = '6px';
-          // tEl.style.borderRadius = '6px';
-          // tEl.title = `${t.text}${t.duedate ? ' — ' + t.duedate : ''}`;
-          // tEl.textContent = `${t.duedate} - ${(t.text.length > 120) ? t.text.slice(0,120) + '…' : t.text}`;
           listWrap.appendChild(elNoteItem);
         });
+
         wrap.appendChild(listWrap);
         return wrap;
       };
 
-      // ABOVE: unscheduled / earlier than current month
-      this.el_cw.appendChild(buildListBlock('Unscheduled / earlier than this month', aboveTasks));
+      this.el_cw.appendChild(
+        buildListBlock('Unscheduled / earlier than this month', aboveTasks)
+      );
 
-      // build calendar table (in-month tasks will be injected into cells)
-      const table = document.createElement('table'); table.className = 'calendar-table';
-      const weekdays = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-      const thead = document.createElement('thead'); const trHead = document.createElement('tr');
-      weekdays.forEach(w => { const th = document.createElement('th'); th.textContent = w; trHead.appendChild(th); });
-      thead.appendChild(trHead); table.appendChild(thead);
+      const table = document.createElement('table');
+      table.className = 'calendar-table';
+      const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const thead = document.createElement('thead');
+      const trHead = document.createElement('tr');
 
-      // compute month layout
-      let firstDay = new Date(this.calendarYear, this.calendarMonth, 1).getDay();
-      firstDay = (firstDay === 0) ? 6 : firstDay - 1; // convert Sun(0)/Mon(1).. to Mon(0)..Sun(6)
-      const daysInMonth = new Date(this.calendarYear, this.calendarMonth+1, 0).getDate();
+      weekdays.forEach(w => {
+        const th = document.createElement('th');
+        th.textContent = w;
+        trHead.appendChild(th);
+      });
+      thead.appendChild(trHead);
+      table.appendChild(thead);
+
+      let firstDay = new Date(
+        this.calendarYear,
+        this.calendarMonth,
+        1
+      ).getDay();
+      firstDay = firstDay === 0 ? 6 : firstDay - 1;
+      const daysInMonth = new Date(
+        this.calendarYear,
+        this.calendarMonth + 1,
+        0
+      ).getDate();
+
       const tbody = document.createElement('tbody');
       let tr = document.createElement('tr');
       let dayCount = 0;
 
-      // empty cells
-      for(let i=0;i<firstDay;i++){ const td = document.createElement('td'); td.className="calendar-cell-empty"; td.textContent = ''; tr.appendChild(td); dayCount++; }
+      for (let i = 0; i < firstDay; i++) {
+        const td = document.createElement('td');
+        td.className = 'calendar-cell-empty';
+        td.textContent = '';
+        tr.appendChild(td);
+        dayCount++;
+      }
 
-      for(let d=1; d<=daysInMonth; d++){
-        if (dayCount % 7 === 0 && dayCount !== 0) { tbody.appendChild(tr); tr = document.createElement('tr'); }
-        const td = document.createElement('td'); td.className = 'calendar-cell';
-        // mark weekend
-        const weekdayIndex = (dayCount % 7);
-        if (weekdayIndex === 5 || weekdayIndex === 6) td.classList.add('calendar-weekend');
-        // highlight today
+      for (let d = 1; d <= daysInMonth; d++) {
+        if (dayCount % 7 === 0 && dayCount !== 0) {
+          tbody.appendChild(tr);
+          tr = document.createElement('tr');
+        }
+
+        const td = document.createElement('td');
+        td.className = 'calendar-cell';
+        const weekdayIndex = dayCount % 7;
+        if (weekdayIndex === 5 || weekdayIndex === 6) {
+          td.classList.add('calendar-weekend');
+        }
+
         const today = new Date();
-        if (this.calendarYear === today.getFullYear() && this.calendarMonth === today.getMonth() && d === today.getDate()) td.classList.add('calendar-today');
+        if (
+          this.calendarYear === today.getFullYear() &&
+          this.calendarMonth === today.getMonth() &&
+          d === today.getDate()
+        ) {
+          td.classList.add('calendar-today');
+        }
 
-        // Day number
-        const dayNum = document.createElement('div'); dayNum.style.fontWeight = '600'; dayNum.style.marginBottom = '6px'; dayNum.textContent = d;
+        const dayNum = document.createElement('div');
+        dayNum.style.fontWeight = '600';
+        dayNum.style.marginBottom = '6px';
+        dayNum.textContent = d;
         td.appendChild(dayNum);
 
-        // Tasks list for the day
-        const dateStr = `${this.calendarYear}-${String(this.calendarMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const dateStr =
+          `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         const tasksForDay = tasks.filter(t => t.duedate === dateStr);
+
         if (tasksForDay.length > 0) {
           const tasksWrap = document.createElement('div');
           tasksWrap.style.display = 'flex';
           tasksWrap.style.flexDirection = 'column';
           tasksWrap.style.gap = '4px';
+
           tasksForDay.forEach(t => {
             const tEl = document.createElement('div');
             tEl.className = `tagList-task task-${t.task || 'low'}`;
             tEl.style.padding = '4px';
             tEl.style.borderRadius = '6px';
             tEl.title = t.text;
-            tEl.textContent = t.duedate + " - "+ (t.text.length > 80) ? t.text.slice(0,80) + '…' : t.text;
+            tEl.textContent = t.duedate + ' - ' + (t.text.length > 80)
+              ? t.text.slice(0, 80) + '…'
+              : t.text;
             tasksWrap.appendChild(tEl);
           });
           td.appendChild(tasksWrap);
         }
+
         tr.appendChild(td);
         dayCount++;
       }
 
-      // fill ending empty cells
-      while(dayCount % 7 !== 0){ const td = document.createElement('td'); td.className="calendar-cell-empty"; td.textContent = ''; tr.appendChild(td); dayCount++; }
-      tbody.appendChild(tr); table.appendChild(tbody);
+      while (dayCount % 7 !== 0) {
+        const td = document.createElement('td');
+        td.className = 'calendar-cell-empty';
+        td.textContent = '';
+        tr.appendChild(td);
+        dayCount++;
+      }
 
+      tbody.appendChild(tr);
+      table.appendChild(tbody);
       this.el_cw.appendChild(table);
-
-      // BELOW: tasks after this month
-      this.el_cw.appendChild(buildListBlock('Scheduled after this month', belowTasks));
+      this.el_cw.appendChild(
+        buildListBlock('Scheduled after this month', belowTasks)
+      );
     }
   },
+
   Explorer: {
     async render() {
       this.el = eid('app');
       this.el.replaceChildren();
-      const shell = this.el.appendChild(view.createEl('div', {id: 'ExplorerApp'}));
+
+      const shell = this.el.appendChild(
+        view.createEl('div', {id: 'ExplorerApp'})
+      );
       shell.appendChild(view.createEl('div', {id: 'TopBar'}));
       view.TopBar.render();
 
-      const layout = shell.appendChild(view.createEl('div', {id: 'ExplorerLayout'}));
-      const sidebar = layout.appendChild(view.createEl('aside', {id: 'ExplorerSidebar'}));
-      const sidebarTitle = sidebar.appendChild(document.createElement('h2'));
+      const layout = shell.appendChild(
+        view.createEl('div', {id: 'ExplorerLayout'})
+      );
+      const sidebar = layout.appendChild(
+        view.createEl('aside', {id: 'ExplorerSidebar'})
+      );
+      const sidebarTitle = sidebar.appendChild(
+        document.createElement('h2')
+      );
       sidebarTitle.textContent = 'Tabelle';
-      this.tableList = sidebar.appendChild(view.createEl('nav', {
-        id: 'ExplorerTableList',
-        'aria-label': 'Tabelle del database'
-      }));
 
-      const workspace = layout.appendChild(view.createEl('main', {id: 'ExplorerWorkspace'}));
-      this.results = workspace.appendChild(view.createEl('section', {
-        id: 'ExplorerResults',
-        'aria-label': 'Risultati query'
-      }));
+      this.tableList = sidebar.appendChild(
+        view.createEl('nav', {
+          id: 'ExplorerTableList',
+          'aria-label': 'Tabelle del database'
+        })
+      );
+
+      const workspace = layout.appendChild(
+        view.createEl('main', {id: 'ExplorerWorkspace'})
+      );
+      this.results = workspace.appendChild(
+        view.createEl('section', {
+          id: 'ExplorerResults',
+          'aria-label': 'Risultati query'
+        })
+      );
       this.results.setAttribute('aria-live', 'polite');
-      this.results.textContent = 'Seleziona una tabella o inserisci una query SQL.';
+      this.results.textContent =
+        'Seleziona una tabella o inserisci una query SQL.';
 
-      const form = workspace.appendChild(view.createEl('form', {id: 'ExplorerQueryForm'}));
-      const toolbar = form.appendChild(view.createEl('div', {className: 'explorer-query-toolbar'}));
-      const queryLabel = toolbar.appendChild(document.createElement('label'));
+      const form = workspace.appendChild(
+        view.createEl('form', {id: 'ExplorerQueryForm'})
+      );
+      const toolbar = form.appendChild(
+        view.createEl('div', {className: 'explorer-query-toolbar'})
+      );
+      const queryLabel = toolbar.appendChild(
+        document.createElement('label')
+      );
       queryLabel.htmlFor = 'ExplorerQuery';
       queryLabel.textContent = 'Query SQL';
-      const runButton = toolbar.appendChild(view.createEl('button', {
-        type: 'submit',
-        className: 'btn primary',
-        innerHTML: '<i class="fa-solid fa-play" aria-hidden="true"></i> Esegui'
-      }));
-      this.queryInput = form.appendChild(view.createEl('textarea', {
-        id: 'ExplorerQuery',
-        name: 'query',
-        rows: 4,
-        spellcheck: false,
-        placeholder: 'SELECT * FROM notes LIMIT 100;'
-      }));
-      this.queryInput.setAttribute('aria-label', 'Query SQL in sola lettura');
-      this.queryStatus = form.appendChild(view.createEl('div', {
-        id: 'ExplorerQueryStatus',
-        role: 'status',
-        'aria-live': 'polite'
-      }));
+
+      const runButton = toolbar.appendChild(
+        view.createEl('button', {
+          type: 'submit',
+          className: 'btn primary',
+          innerHTML:
+            '<i class="fa-solid fa-play" aria-hidden="true"></i> Esegui'
+        })
+      );
+
+      this.queryInput = form.appendChild(
+        view.createEl('textarea', {
+          id: 'ExplorerQuery',
+          name: 'query',
+          rows: 4,
+          spellcheck: false,
+          placeholder: 'SELECT * FROM notes LIMIT 100;'
+        })
+      );
+      this.queryInput.setAttribute(
+        'aria-label',
+        'Query SQL in sola lettura'
+      );
+
+      this.queryStatus = form.appendChild(
+        view.createEl('div', {
+          id: 'ExplorerQueryStatus',
+          role: 'status',
+          'aria-live': 'polite'
+        })
+      );
+
       form.addEventListener('submit', async ev => {
         ev.preventDefault();
         runButton.disabled = true;
@@ -2102,39 +3283,55 @@ const view = {
 
       await this.loadTables();
     },
+
     async loadTables() {
       this.tableList.textContent = 'Caricamento…';
       try {
         const tables = await api.api('/api/explorer/tables');
         this.tableList.replaceChildren();
+
         if (!tables.length) {
           this.tableList.textContent = 'Nessuna tabella';
           return;
         }
+
         tables.forEach(tableName => {
           const tableButton = document.createElement('button');
           tableButton.type = 'button';
           tableButton.className = 'explorer-table-button';
           tableButton.textContent = tableName;
-          tableButton.onclick = () => this.selectTable(tableName, tableButton);
+          tableButton.onclick = () => this.selectTable(
+            tableName,
+            tableButton
+          );
           this.tableList.appendChild(tableButton);
         });
-        await this.selectTable(tables[0], this.tableList.firstElementChild);
+
+        await this.selectTable(
+          tables[0],
+          this.tableList.firstElementChild
+        );
       } catch (error) {
         this.tableList.textContent = `Errore: ${error.message}`;
       }
     },
+
     async selectTable(tableName, tableButton) {
-      this.tableList.querySelectorAll('.explorer-table-button').forEach(button => {
+      this.tableList.querySelectorAll(
+        '.explorer-table-button'
+      ).forEach(button => {
         button.classList.toggle('active', button === tableButton);
       });
+
       const quotedName = `"${tableName.replace(/"/g, '""')}"`;
       this.queryInput.value = `SELECT * FROM ${quotedName} LIMIT 200;`;
       await this.runQuery();
     },
+
     async runQuery(query = this.queryInput.value) {
       this.queryStatus.textContent = 'Esecuzione…';
       this.queryStatus.dataset.state = 'loading';
+
       try {
         const result = await api.api('/api/explorer/query', {
           method: 'POST',
@@ -2156,15 +3353,18 @@ const view = {
         this.queryStatus.dataset.state = 'error';
       }
     },
+
     renderResults(result) {
       const table = document.createElement('table');
       table.className = 'explorer-result-table';
+
       const head = table.createTHead().insertRow();
       result.columns.forEach(column => {
         const cell = document.createElement('th');
         cell.textContent = column;
         head.appendChild(cell);
       });
+
       const body = table.createTBody();
       result.rows.forEach(row => {
         const tr = body.insertRow();
@@ -2179,7 +3379,7 @@ const view = {
       });
       this.results.replaceChildren(table);
     }
-  },
+  }
 };
 
 // MODAL
@@ -2187,6 +3387,7 @@ const modal = {
   imageViewer: {
     el: null,
     onKeydown: null,
+
     open(src, alt = '') {
       this.close();
       this.el = document.createElement('div');
@@ -2219,21 +3420,24 @@ const modal = {
       document.body.appendChild(this.el);
       closeButton.focus();
     },
+
     close() {
       if (!this.el) return;
       this.el.remove();
       this.el = null;
-      if (this.onKeydown) document.removeEventListener('keydown', this.onKeydown);
+      if (this.onKeydown) {
+        document.removeEventListener('keydown', this.onKeydown);
+      }
       this.onKeydown = null;
     }
   },
+
   filterModal: {
     el: null,
     tokens: [],
+
     render() {
-      if (this.el) {
-        this.el.remove();
-      }
+      if (this.el) this.el.remove();
       this.tokens = [];
       this.el = document.createElement('div');
       this.el.className = 'modal';
@@ -2268,7 +3472,8 @@ const modal = {
         this.tokens.forEach((token, index) => {
           const chip = document.createElement('button');
           chip.type = 'button';
-          chip.className = `filter-rule-token ${token.kind === 'tag' ? 'filter-rule-tag' : 'filter-rule-operator'}`;
+          chip.className =
+            `filter-rule-token ${token.kind === 'tag' ? 'filter-rule-tag' : 'filter-rule-operator'}`;
           chip.textContent = token.value;
           chip.title = 'Rimuovi dalla regola';
           chip.setAttribute('aria-label', `Rimuovi ${token.value}`);
@@ -2294,6 +3499,7 @@ const modal = {
         suggestions.innerHTML = '';
         const query = search.value.trim().toLocaleLowerCase();
         if (!query) return;
+
         availableTags
           .filter(tag => tag.name.toLocaleLowerCase().includes(query))
           .slice(0, 8)
@@ -2302,7 +3508,8 @@ const modal = {
             option.type = 'button';
             option.className = 'filter-tag-suggestion';
             option.setAttribute('role', 'option');
-            option.innerHTML = `<span>${tag.name}</span><span class="tag-category">${tag.category}</span>`;
+            option.innerHTML =
+              `<span>${tag.name}</span><span class="tag-category">${tag.category}</span>`;
             option.onmousedown = ev => ev.preventDefault();
             option.onclick = () => addToken(tag.name, 'tag');
             suggestions.appendChild(option);
@@ -2311,33 +3518,50 @@ const modal = {
 
       search.addEventListener('input', renderSuggestions);
       search.addEventListener('keydown', ev => {
-        if (ev.key === 'Backspace' && !search.value && this.tokens.length) {
+        if (
+          ev.key === 'Backspace' &&
+          !search.value &&
+          this.tokens.length
+        ) {
           this.tokens.pop();
           renderTokens();
-        } else if (ev.key === 'Enter' && suggestions.firstElementChild) {
+        } else if (
+          ev.key === 'Enter' &&
+          suggestions.firstElementChild
+        ) {
           ev.preventDefault();
           suggestions.firstElementChild.click();
-        } else if (ev.key === 'Tab' && suggestions.firstElementChild) {
+        } else if (
+          ev.key === 'Tab' &&
+          suggestions.firstElementChild
+        ) {
           ev.preventDefault();
           suggestions.firstElementChild.click();
-        } else if (['!', 'o', '(', ')'].includes(ev.key) && !search.value) {
-          // Prevent default to avoid typing the character in the search box
+        } else if (
+          ['!', 'o', '(', ')'].includes(ev.key) &&
+          !search.value
+        ) {
           ev.preventDefault();
           addToken(ev.key, 'operator');
         }
       });
 
       const operators = dialog.querySelector('.filter-operators');
-      [['!', 'not'], ['e', 'and'], ['o', 'or'], ['(', 'parentesi aperta'], [')', 'parentesi chiusa']]
-        .forEach(([value, label]) => {
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.className = 'btn standard';
-          button.textContent = value;
-          button.title = label;
-          button.onclick = () => addToken(value, 'operator');
-          operators.appendChild(button);
-        });
+      [
+        ['!', 'not'],
+        ['e', 'and'],
+        ['o', 'or'],
+        ['(', 'parentesi aperta'],
+        [')', 'parentesi chiusa']
+      ].forEach(([value, label]) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn standard';
+        button.textContent = value;
+        button.title = label;
+        button.onclick = () => addToken(value, 'operator');
+        operators.appendChild(button);
+      });
 
       dialog.querySelector('#filter-cancel').onclick = () => {
         dialog.remove();
@@ -2349,6 +3573,7 @@ const modal = {
           this.el = null;
         }
       };
+
       form.onsubmit = async ev => {
         ev.preventDefault();
         const rule = this.tokens.map(token => token.value).join(' ');
@@ -2367,8 +3592,10 @@ const modal = {
       search.focus();
     }
   },
+
   editModal: {
     el: null,
+
     render(note, editCallback) {
       if (this.el) this.el.remove();
       this.el = document.createElement('div');
@@ -2389,23 +3616,27 @@ const modal = {
       `;
       document.body.appendChild(this.el);
 
-      const editModal =eid('editModal');
-      editModal.onsubmit = async (ev) => {
+      const editModal = eid('editModal');
+      editModal.onsubmit = async ev => {
         ev.preventDefault();
-        const btn = ev.submitter; // the button element
-        if (btn.value == "cancel") {
+        const btn = ev.submitter;
+        if (btn.value == 'cancel') {
           this.el.remove();
           this.el = null;
         } else {
-          // PATCH API
           const updated = await api.api(`/api/notes/${note.id}`, {
-            method: "PATCH",
+            method: 'PATCH',
             body: Object.fromEntries(new FormData(ev.target).entries())
           });
-          if(!updated || !updated.note.id || updated.status != 'patched') {
+          if (
+            !updated ||
+            !updated.note.id ||
+            updated.status != 'patched'
+          ) {
             alert('Error saving note');
             return;
           }
+
           editCallback?.(updated.note, note.tags, note.date);
           await model.tags.reload();
           await model.tasks.reload();
@@ -2413,17 +3644,19 @@ const modal = {
           this.el.remove();
           this.el = null;
         }
-      }
-       
+      };
     }
   },
+
   editTreeTagModal: {
     el: null,
+
     render(tag) {
-      console.debug(`[fn] openEditTreeTagModal`, tag);
-      const tagObj = model.get('tags').find( t => t.name === tag);
-      console.debug(`[fn] openEditTreeTagModal`, tagObj);
+      console.debug('[fn] openEditTreeTagModal', tag);
+      const tagObj = model.get('tags').find(t => t.name === tag);
+      console.debug('[fn] openEditTreeTagModal', tagObj);
       if (this.el) this.el.remove();
+
       this.el = document.createElement('div');
       this.el.className = 'modal';
       this.el.innerHTML = `
@@ -2451,7 +3684,7 @@ const modal = {
               <label for="content">Content:</label>
               <textarea style="flex:1" id="editform-content" name="content" class="modal-textarea">${escapeHTML(tagObj.content)}</textarea>
             </div>
-            <div ></div>
+            <div></div>
             <div class="modal-actions">
               <button type="submit" value="cancel" class="btn standard" id="edit-tree-modal-cancel">Cancel</button>
               <button type="submit" value="save" class="btn primary" id="edit-tree-modal-save">Save</button>
@@ -2462,21 +3695,29 @@ const modal = {
       document.body.appendChild(this.el);
 
       const parentInput = this.el.querySelector('#editform-parent');
-      const parentSuggestions = this.el.querySelector('#editform-parent-suggestions');
+      const parentSuggestions = this.el.querySelector(
+        '#editform-parent-suggestions'
+      );
       const availableParentTags = model.get('tags') || [];
-      const selectParent = (parentTag) => {
+
+      const selectParent = parentTag => {
         parentInput.value = parentTag.name;
         parentSuggestions.replaceChildren();
         parentSuggestions.style.display = 'none';
         parentInput.focus();
       };
+
       const renderParentSuggestions = () => {
         const query = parentInput.value.trim().toLocaleLowerCase();
         const matches = query
           ? availableParentTags
-            .filter(candidate => candidate.name !== tagObj.name && candidate.name.toLocaleLowerCase().includes(query))
-            .slice(0, 8)
+              .filter(candidate =>
+                candidate.name !== tagObj.name &&
+                candidate.name.toLocaleLowerCase().includes(query)
+              )
+              .slice(0, 8)
           : [];
+
         parentSuggestions.replaceChildren();
         matches.forEach(candidate => {
           const option = document.createElement('button');
@@ -2490,13 +3731,18 @@ const modal = {
         });
         parentSuggestions.style.display = matches.length ? 'flex' : 'none';
       };
+
       parentInput.addEventListener('input', renderParentSuggestions);
       parentInput.addEventListener('focus', renderParentSuggestions);
       parentInput.addEventListener('blur', () => {
         parentSuggestions.style.display = 'none';
       });
       parentInput.addEventListener('keydown', ev => {
-        if (ev.key === 'Tab' && !ev.shiftKey && parentSuggestions.firstElementChild) {
+        if (
+          ev.key === 'Tab' &&
+          !ev.shiftKey &&
+          parentSuggestions.firstElementChild
+        ) {
           ev.preventDefault();
           parentSuggestions.firstElementChild.click();
         } else if (ev.key === 'Enter') {
@@ -2506,51 +3752,51 @@ const modal = {
           parentSuggestions.style.display = 'none';
         }
       });
-      
-      // Cancel button
-      /*
-      this.el.querySelector('#edit-tree-modal-cancel').onclick = () => {
-        this.el.remove();
-        this.el = null;
-      };
-      */
-      // Save button
 
       const EditTagForm = eid('EditTagForm');
-      EditTagForm.onsubmit = async (ev) => {
+      EditTagForm.onsubmit = async ev => {
         ev.preventDefault();
-        const btn = ev.submitter; // the button element
-        if (btn.value == "cancel") {
+        const btn = ev.submitter;
+
+        if (btn.value == 'cancel') {
           this.el.remove();
           this.el = null;
         } else {
           const formData = new FormData(ev.target);
-          const updated = await api.api(`/api/tags/${tagObj.category}/${tag.substring(1)}`, {
-            method: "PATCH",
-            body: Object.fromEntries(formData.entries())
-          });
-          // Update local tag
-          model.set('tags', (tags) => {
-            const index = tags.findIndex(item => item['name'] === updated['name']);
+          const updated = await api.api(
+            `/api/tags/${tagObj.category}/${tag.substring(1)}`,
+            {
+              method: 'PATCH',
+              body: Object.fromEntries(formData.entries())
+            }
+          );
+          model.set('tags', tags => {
+            const index = tags.findIndex(
+              item => item.name === updated.name
+            );
             if (index !== -1) tags[index] = updated;
             return tags;
-          })
+          });
 
           businessLogic.completeActionRequiredTag(tagObj.name);
           await view.ActionRequiredBox.render();
-
           this.el.remove();
           this.el = null;
         }
-      }
+      };
     }
   },
+
   editTagPropertiesModal: {
     el: null,
+
     async render(tag) {
-      const tagObj = (model.get('tags') || []).find(item => item.name === tag);
+      const tagObj = (model.get('tags') || []).find(
+        item => item.name === tag
+      );
       if (!tagObj) return;
       if (this.el) this.el.remove();
+
       const el = this.el = document.createElement('div');
       el.className = 'modal';
       el.innerHTML = `
@@ -2568,18 +3814,26 @@ const modal = {
           <button type="button" data-dismiss class="btn standard">Chiudi</button>
         </div>`;
       document.body.appendChild(el);
-      const close = () => { el.remove(); if (this.el === el) this.el = null; };
+
+      const close = () => {
+        el.remove();
+        if (this.el === el) this.el = null;
+      };
       el.querySelector('[data-dismiss]').onclick = close;
       el.querySelector('[data-close]').onclick = close;
+
       const status = el.querySelector('[role="status"]');
       const form = el.querySelector('form');
       form.style.display = 'none';
       const list = el.querySelector('.tag-properties-list');
-      const url = `/api/tags/${encodeURIComponent(tagObj.category)}/${encodeURIComponent(helper.getAnonymizedTag(tag))}/properties`;
+      const url =
+        `/api/tags/${encodeURIComponent(tagObj.category)}/${encodeURIComponent(helper.getAnonymizedTag(tag))}/properties`;
+
       const addRow = (property = {key: '', value: ''}) => {
         const row = document.createElement('div');
         row.className = 'property-item';
-        row.innerHTML = `<label>Chiave <input data-key required></label>
+        row.innerHTML = `
+          <label>Chiave <input data-key required></label>
           <label>Valore <textarea data-value class="modal-textarea"></textarea></label>
           <button type="button" class="btn standard">Rimuovi</button>`;
         row.querySelector('[data-key]').value = property.key;
@@ -2587,40 +3841,59 @@ const modal = {
         row.querySelector('button').onclick = () => row.remove();
         list.appendChild(row);
       };
+
       el.querySelector('[data-add]').onclick = () => addRow();
+
       try {
         const response = await api.api(url);
         if (this.el !== el) return;
         response.properties.forEach(addRow);
-        status.textContent = response.properties.length ? '' : 'Nessuna proprietà associata.';
+        status.textContent = response.properties.length
+          ? ''
+          : 'Nessuna proprietà associata.';
         form.hidden = false;
         form.style.display = '';
         el.querySelector('[data-dismiss]').hidden = true;
       } catch (error) {
-        status.textContent = `Impossibile caricare le proprietà: ${error.message}`;
+        status.textContent =
+          `Impossibile caricare le proprietà: ${error.message}`;
         return;
       }
+
       form.onsubmit = async ev => {
         ev.preventDefault();
+
         const properties = Array.from(list.children, row => ({
           key: row.querySelector('[data-key]').value.trim(),
           value: row.querySelector('[data-value]').value
         }));
-        if (properties.some(p => !p.key || /[\[\]\r\n]/.test(p.key)) ||
-            new Set(properties.map(p => p.key)).size !== properties.length) {
-          status.textContent = 'Usa chiavi non vuote, uniche e senza parentesi quadre.';
+
+        if (
+          properties.some(p => !p.key || /[\[\]\r\n]/.test(p.key)) ||
+          new Set(properties.map(p => p.key)).size !== properties.length
+        ) {
+          status.textContent =
+            'Usa chiavi non vuote, uniche e senza parentesi quadre.';
           return;
         }
-        const controls = Array.from(form.querySelectorAll('button, input, textarea'));
+
+        const controls = Array.from(
+          form.querySelectorAll('button, input, textarea')
+        );
         controls.forEach(control => control.disabled = true);
         let saved = false;
+
         try {
-          await api.api(url, {method: 'PUT', body: {properties}});
+          await api.api(url, {
+            method: 'PUT',
+            body: {properties}
+          });
           saved = true;
           await page.home.refreshMetadata();
           close();
         } catch (error) {
-          status.textContent = saved ? `Proprietà salvate, aggiornamento fallito: ${error.message}`
+          status.textContent = saved
+            ? `Proprietà salvate, aggiornamento fallito: ${error.message}`
             : `Salvataggio non riuscito: ${error.message}`;
         } finally {
           controls.forEach(control => control.disabled = false);
@@ -2628,34 +3901,409 @@ const modal = {
       };
     }
   }
-}
+};
 
 // ROUTER
 async function router() {
-  const hash = location.hash.replace(/^#/, "") || "/";
-  if (hash === "/" || hash === "/home") {
+  const hash = location.hash.replace(/^#/, '') || '/';
+
+  if (hash === '/' || hash === '/home') {
     await page.home.load();
     page.home.render();
     window.dispatchEvent(new Event('journote-home-ready'));
-  } else if (hash === "/calendar") {
+  } else if (hash === '/calendar') {
     await page.calendar.load();
     page.calendar.render();
-  } else if (hash === "/explorer") {
+  } else if (hash === '/explorer') {
+    view.EditorWrap.dispose();
     await view.Explorer.render();
   } else {
-    app.innerHTML = "<p>Not found</p>";
+    view.EditorWrap.dispose();
+    app.innerHTML = '<p>Not found</p>';
   }
 }
 
 // RUN
 (async () => {
-  window.addEventListener("hashchange", router);
+  window.addEventListener('hashchange', router);
   window.addEventListener('keydown', ev => {
-    if (ev.altKey && !ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === 'f') {
+    if (
+      ev.altKey &&
+      !ev.ctrlKey &&
+      !ev.shiftKey &&
+      ev.key.toLowerCase() === 'f'
+    ) {
       ev.preventDefault();
       modal.filterModal.render();
     }
   });
   await router();
-}
-)();
+})();
+
+// Aggiungi questo blocco alla fine di main.js.
+// Adatta Monaco al tema Journote senza modificare la logica dell'editor.
+
+(() => {
+  const themeName = 'journote-markdown';
+
+  const readToken = (name, fallback) =>
+    getComputedStyle(document.documentElement)
+      .getPropertyValue(name)
+      .trim() || fallback;
+
+  const readColor = (name, fallback) => {
+    const value = readToken(name, fallback);
+    return /^#[\da-f]{6}$/i.test(value) ? value : fallback;
+  };
+
+  const applyTypography = editor => {
+    const rootSize =
+      parseFloat(getComputedStyle(document.documentElement).fontSize) || 14;
+    const fontSize = Math.round(rootSize * 0.95 * 100) / 100;
+
+    editor.updateOptions({
+      theme: themeName,
+      fontFamily: readToken(
+        '--font-code',
+        '"IBM Plex Mono", "Cascadia Mono", monospace'
+      ),
+      fontSize,
+      fontWeight: '400',
+      lineHeight: Math.round(fontSize * 1.5),
+      letterSpacing: 0,
+      padding: {top: 12, bottom: 12},
+
+      lineNumbers: 'on',
+      lineNumbersMinChars: 3,
+      lineDecorationsWidth: 8,
+      renderLineHighlight: 'all',
+      renderLineHighlightOnlyWhenFocus: true
+    });
+  };
+
+  journoteEditor.installStyles = function (monaco) {
+    const colors = {
+      paper: readColor('--paper', '#ffffff'),
+      paperMuted: readColor('--paper-muted', '#f6f9f7'),
+      ink: readColor('--ink', '#25332d'),
+      muted: readColor('--muted', '#68766f'),
+      border: readColor('--border', '#d8e2dc'),
+      accent: readColor('--accent', '#286b56'),
+      accentStrong: readColor('--accent-strong', '#1b5744'),
+      accentSoft: readColor('--accent-soft', '#e1eee7'),
+      error: readColor('--c-error', '#d34e4e'),
+      project: readColor('--c-project', '#286b56'),
+      event: readColor('--c-event', '#366f91'),
+      generic: readColor('--c-generic', '#a7503b'),
+      person: readColor('--c-person', '#886414')
+    };
+
+    monaco.editor.defineTheme(themeName, {
+      base: 'vs',
+      inherit: true,
+      rules: [
+        {
+          token: '',
+          foreground: colors.ink.slice(1)
+        },
+        {
+          token: 'keyword',
+          foreground: colors.accentStrong.slice(1),
+          fontStyle: 'bold'
+        },
+        {
+          token: 'strong',
+          foreground: colors.ink.slice(1),
+          fontStyle: 'bold'
+        },
+        {
+          token: 'emphasis',
+          foreground: colors.ink.slice(1),
+          fontStyle: 'italic'
+        },
+        {
+          token: 'string',
+          foreground: colors.generic.slice(1)
+        },
+        {
+          token: 'string.link',
+          foreground: colors.event.slice(1)
+        },
+        {
+          token: 'variable',
+          foreground: colors.event.slice(1)
+        },
+        {
+          token: 'comment',
+          foreground: colors.muted.slice(1)
+        },
+        {
+          token: 'tag',
+          foreground: colors.accent.slice(1)
+        }
+      ],
+      colors: {
+        'editor.background': colors.paper,
+        'editor.foreground': colors.ink,
+        'editorCursor.foreground': colors.accentStrong,
+
+        'editor.selectionBackground': '#c9dfd2',
+        'editor.inactiveSelectionBackground': colors.accentSoft,
+        'editor.selectionHighlightBackground': '#e1eee780',
+        'editor.selectionHighlightBorder': '#a5c6b4',
+
+        'editor.wordHighlightBackground': '#e1eee780',
+        'editor.wordHighlightStrongBackground': '#c9dfd280',
+        'editor.findMatchBackground': '#ead8a3',
+        'editor.findMatchHighlightBackground': '#f8f0d9',
+        'editor.findMatchBorder': '#bd8b22',
+
+        'editor.lineHighlightBackground': colors.paperMuted,
+        'editorLineNumber.foreground': colors.muted,
+        'editorLineNumber.activeForeground': colors.accentStrong,
+        'editorGutter.background': colors.paper,
+        'editorWhitespace.foreground': '#c5d2ca',
+        'editorIndentGuide.background1': '#edf1ee',
+        'editorIndentGuide.activeBackground1': '#a5c6b4',
+
+        'editorBracketMatch.background': colors.accentSoft,
+        'editorBracketMatch.border': '#a5c6b4',
+        'editorLink.activeForeground': colors.event,
+        'editorError.foreground': colors.error,
+
+        'editorWidget.background': colors.paperMuted,
+        'editorWidget.foreground': colors.ink,
+        'editorWidget.border': colors.border,
+        'editorHoverWidget.background': colors.paper,
+        'editorHoverWidget.foreground': colors.ink,
+        'editorHoverWidget.border': colors.border,
+
+        'input.background': colors.paper,
+        'input.foreground': colors.ink,
+        'input.border': colors.border,
+        'input.placeholderForeground': colors.muted,
+        'inputOption.activeBackground': colors.accentSoft,
+        'inputOption.activeForeground': colors.accentStrong,
+        'inputOption.activeBorder': '#a5c6b4',
+
+        'list.activeSelectionBackground': colors.accentSoft,
+        'list.activeSelectionForeground': colors.accentStrong,
+        'list.focusBackground': colors.accentSoft,
+        'list.focusForeground': colors.accentStrong,
+        'list.hoverBackground': colors.paperMuted,
+        'list.hoverForeground': colors.ink,
+
+        'menu.background': colors.paper,
+        'menu.foreground': colors.ink,
+        'menu.border': colors.border,
+        'menu.selectionBackground': colors.accentSoft,
+        'menu.selectionForeground': colors.accentStrong,
+        'menu.separatorBackground': colors.border,
+
+        'scrollbarSlider.background': '#bccbc280',
+        'scrollbarSlider.hoverBackground': '#a5b9adc0',
+        'scrollbarSlider.activeBackground': '#86ad96',
+        'scrollbar.shadow': '#00000000',
+
+        'focusBorder': '#86ad96',
+        'widget.shadow': '#223e2f18'
+      }
+    });
+  };
+
+  const originalAdapter = journoteEditor.adapter;
+
+  journoteEditor.adapter = function (editor, host, monaco) {
+    applyTypography(editor);
+
+    if (document.fonts?.ready) {
+      document.fonts.ready.then(() => {
+        if (host.isConnected) {
+          monaco.editor.remeasureFonts();
+        }
+      });
+    }
+
+    return originalAdapter.call(this, editor, host, monaco);
+  };
+
+  // Applica il tema anche se Monaco è già stato inizializzato.
+  if (window.monaco?.editor) {
+    journoteEditor.installStyles(window.monaco);
+
+    const editor = view.EditorWrap.monacoEditor;
+    if (editor) {
+      applyTypography(editor);
+      view.EditorWrap.resizeEditor();
+    }
+  }
+})();
+
+// Append this block at the end of main.js, after the theme customization.
+//
+// Type #, @, > or + to suggest existing tags.
+// Arrow keys: navigate. Enter / Tab: insert. Escape: dismiss.
+// Ctrl+Space: reopen suggestions while editing a tag.
+
+(() => {
+  if (journoteEditor.tagAutocompleteInstalled) return;
+  journoteEditor.tagAutocompleteInstalled = true;
+
+  const attachedEditors = new WeakSet();
+
+  function attachAutocomplete(editor, monaco) {
+    if (attachedEditors.has(editor)) return;
+    attachedEditors.add(editor);
+
+    editor.updateOptions({
+      suggestOnTriggerCharacters: true,
+      quickSuggestions: {
+        other: true,
+        comments: true,
+        strings: true
+      },
+      quickSuggestionsDelay: 100,
+      wordBasedSuggestions: 'off',
+      acceptSuggestionOnEnter: 'on',
+      acceptSuggestionOnCommitCharacter: false,
+      tabCompletion: 'off',
+      snippetSuggestions: 'none',
+      suggest: {
+        insertMode: 'replace',
+        showWords: false,
+        showSnippets: false,
+        preview: false,
+        selectionMode: 'always'
+      }
+    });
+
+    const categories = {
+      '#': {
+        label: 'Progetto',
+        kind: monaco.languages.CompletionItemKind.Folder
+      },
+      '@': {
+        label: 'Persona',
+        kind: monaco.languages.CompletionItemKind.User
+      },
+      '>': {
+        label: 'Evento',
+        kind: monaco.languages.CompletionItemKind.Event
+      },
+      '+': {
+        label: 'Tag generico',
+        kind: monaco.languages.CompletionItemKind.Keyword
+      }
+    };
+
+    const provider = monaco.languages.registerCompletionItemProvider(
+      'markdown',
+      {
+        triggerCharacters: ['#', '@', '>', '+'],
+
+        provideCompletionItems(textModel, position, context, cancellation) {
+          // Restrict this provider to this Journote editor.
+          if (
+            cancellation.isCancellationRequested ||
+            textModel !== editor.getModel()
+          ) {
+            return {suggestions: []};
+          }
+
+          const line = textModel.getLineContent(position.lineNumber);
+          const beforeCursor = line.slice(0, position.column - 1);
+
+          // Match only a tag at the start of a line or after whitespace.
+          // Markdown headings ("# Title"), quotes ("> text"), lists ("+ item"),
+          // email addresses and property references do not match.
+          const match = beforeCursor.match(
+            /(?:^|\s)([#@+>][A-Za-z0-9_.-]*)$/
+          );
+
+          if (!match) return {suggestions: []};
+
+          const typedTag = match[1];
+          const prefix = typedTag[0];
+          const query = typedTag.toLowerCase();
+          const category = categories[prefix];
+
+          // Replace the complete tag even when the cursor is in its middle.
+          // Leave surrounding punctuation, whitespace and [property] intact.
+          const suffix = line
+            .slice(position.column - 1)
+            .match(/^[A-Za-z0-9_.-]*/)[0];
+
+          const range = new monaco.Range(
+            position.lineNumber,
+            position.column - typedTag.length,
+            position.lineNumber,
+            position.column + suffix.length
+          );
+
+          // Read the current application model on every request.
+          // Metadata refreshes therefore become available automatically.
+          const tags = model.get('tags') || [];
+          const seen = new Set();
+          const suggestions = [];
+
+          for (const tag of tags) {
+            const name = tag?.name;
+
+            if (
+              typeof name !== 'string' ||
+              name[0] !== prefix ||
+              !/^[#@+>][A-Za-z0-9_.-]+$/.test(name) ||
+              !name.toLowerCase().startsWith(query) ||
+              seen.has(name)
+            ) {
+              continue;
+            }
+
+            seen.add(name);
+
+            const details = [category.label];
+            if (tag.parent) details.push(`Parent: ${tag.parent}`);
+
+            suggestions.push({
+              label: {
+                label: name,
+                description: category.label
+              },
+              kind: category.kind,
+              detail: details.join(' · '),
+              filterText: name,
+              sortText: name.toLowerCase(),
+              insertText: name,
+              range
+            });
+          }
+
+          return {
+            suggestions,
+            incomplete: true
+          };
+        }
+      }
+    );
+
+    // Remove the provider when navigating away or recreating the editor.
+    const disposeListener = editor.onDidDispose(() => {
+      provider.dispose();
+      disposeListener.dispose();
+    });
+  }
+
+  // Preserve the existing adapter and any previously installed theme hooks.
+  const originalAdapter = journoteEditor.adapter;
+
+  journoteEditor.adapter = function (editor, host, monaco) {
+    const adapter = originalAdapter.call(this, editor, host, monaco);
+    attachAutocomplete(editor, monaco);
+    return adapter;
+  };
+
+  // Also support an editor that is already running.
+  if (window.monaco?.editor && view.EditorWrap.monacoEditor) {
+    attachAutocomplete(view.EditorWrap.monacoEditor, window.monaco);
+  }
+})();

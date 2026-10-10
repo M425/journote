@@ -23,6 +23,14 @@
   --c-muted: #a7a6a6;
   --c-muted-l: #f4f8f5;
   --c-muted-d: #676767;
+  --c-project: #286b56;
+  --c-project-l: #e1eee7;
+  --c-event: #366f91;
+  --c-event-l: #e4eff5;
+  --c-generic: #a7503b;
+  --c-generic-l: #fff0e9;
+  --c-person: #886414;
+  --c-person-l: #f8f0d9;
 
   /* Journote workspace theme (overrides the base palette) */
   --accent: #286b56;
