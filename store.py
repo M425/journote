@@ -36,23 +36,23 @@ class Store:
         with self._lock, self._connection:
             self._connection.executescript(
                 "CREATE TABLE IF NOT EXISTS notes ("
-                "id TEXT PRIMARY KEY, timestamp INTEGER, date TEXT, "
-                "text TEXT NOT NULL DEFAULT '', task TEXT, duedate TEXT, "
-                "reply TEXT, replied_to TEXT, "
-                "FOREIGN KEY (reply) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL, "
-                "FOREIGN KEY (replied_to) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL);"
+                    "id TEXT PRIMARY KEY, timestamp INTEGER, date TEXT, "
+                    "text TEXT NOT NULL DEFAULT '', task TEXT, duedate TEXT, "
+                    "reply TEXT, replied_to TEXT, "
+                    "FOREIGN KEY (reply) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL, "
+                    "FOREIGN KEY (replied_to) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL);"
                 "CREATE TABLE IF NOT EXISTS tags ("
-                "name TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT 'Generic', "
-                "treed INTEGER NOT NULL DEFAULT 0, parent TEXT, content TEXT NOT NULL DEFAULT '');"
+                    "name TEXT PRIMARY KEY, category TEXT NOT NULL DEFAULT 'Generic', "
+                    "treed INTEGER NOT NULL DEFAULT 0, parent TEXT, content TEXT NOT NULL DEFAULT '');"
                 "CREATE TABLE IF NOT EXISTS tag_properties ("
-                "tag_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, "
-                "PRIMARY KEY (tag_name, key), "
-                "FOREIGN KEY (tag_name) REFERENCES tags(name) ON UPDATE CASCADE ON DELETE CASCADE);"
+                    "tag_name TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, sort INTEGER NOT NULL DEFAULT 0,"
+                    "PRIMARY KEY (tag_name, key), "
+                    "FOREIGN KEY (tag_name) REFERENCES tags(name) ON UPDATE CASCADE ON DELETE CASCADE);"
                 "CREATE TABLE IF NOT EXISTS note_tags ("
-                "note_id TEXT NOT NULL, tag_name TEXT NOT NULL, position INTEGER NOT NULL, "
-                "PRIMARY KEY (note_id, tag_name), "
-                "FOREIGN KEY (note_id) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE CASCADE, "
-                "FOREIGN KEY (tag_name) REFERENCES tags(name) ON UPDATE CASCADE ON DELETE CASCADE);"
+                    "note_id TEXT NOT NULL, tag_name TEXT NOT NULL, position INTEGER NOT NULL, "
+                    "PRIMARY KEY (note_id, tag_name), "
+                    "FOREIGN KEY (note_id) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE CASCADE, "
+                    "FOREIGN KEY (tag_name) REFERENCES tags(name) ON UPDATE CASCADE ON DELETE CASCADE);"
                 "CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);"
                 "CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task);"
                 "CREATE INDEX IF NOT EXISTS idx_notes_duedate ON notes(duedate);"
@@ -64,47 +64,15 @@ class Store:
                 "CREATE INDEX IF NOT EXISTS idx_note_tags_tag_note ON note_tags(tag_name, note_id);"
                 "CREATE INDEX IF NOT EXISTS idx_note_tags_note_position ON note_tags(note_id, position);"
             )
-            # Migration: add reply / replied_to columns to pre-existing notes tables.
-            existing_columns = {
-                row["name"]
-                for row in self._connection.execute("PRAGMA table_info(notes)").fetchall()
-            }
-            for column in ("reply", "replied_to"):
-                if column not in existing_columns:
-                    self._connection.execute(f"ALTER TABLE notes ADD COLUMN {column} TEXT")
-            # Migration: shrink note ids to the last 12 characters of the uuid.
-            # Rebuild the notes table (SQLite cannot alter column types in place)
-            # and remap references in note_tags and reply/replied_to columns.
-            id_lengths = {
-                row["length"]
-                for row in self._connection.execute(
-                    "SELECT DISTINCT length(id) AS length FROM notes"
-                ).fetchall()
-            }
-            if id_lengths - {12}:
-                self._connection.execute("PRAGMA foreign_keys = OFF")
-                self._connection.executescript(
-                    "CREATE TABLE notes_new ("
-                    "id TEXT PRIMARY KEY, timestamp INTEGER, date TEXT, "
-                    "text TEXT NOT NULL DEFAULT '', task TEXT, duedate TEXT, "
-                    "reply TEXT, replied_to TEXT, "
-                    "FOREIGN KEY (reply) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL, "
-                    "FOREIGN KEY (replied_to) REFERENCES notes(id) ON UPDATE CASCADE ON DELETE SET NULL);"
-                    "INSERT INTO notes_new (id, timestamp, date, text, task, duedate, reply, replied_to) "
-                    "SELECT substr(id, -12), timestamp, date, text, task, duedate, "
-                    "CASE WHEN reply IS NULL THEN NULL ELSE substr(reply, -12) END, "
-                    "CASE WHEN replied_to IS NULL THEN NULL ELSE substr(replied_to, -12) END "
-                    "FROM notes GROUP BY substr(id, -12);"
-                    "UPDATE note_tags SET note_id = substr(note_id, -12);"
-                    "DROP TABLE notes;"
-                    "ALTER TABLE notes_new RENAME TO notes;"
-                    "CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);"
-                    "CREATE INDEX IF NOT EXISTS idx_notes_task ON notes(task);"
-                    "CREATE INDEX IF NOT EXISTS idx_notes_duedate ON notes(duedate);"
-                    "CREATE INDEX IF NOT EXISTS idx_notes_reply ON notes(reply);"
-                    "CREATE INDEX IF NOT EXISTS idx_notes_replied_to ON notes(replied_to);"
-                )
-                self._connection.execute("PRAGMA foreign_keys = ON")
+            # Migration for adding a column in tag_properties table (if it doesn't exist)
+            colonne = self._connection.execute("PRAGMA table_info(tag_properties)").fetchall()
+            if not any(colonna[1] == "sort" for colonna in colonne):
+                self._connection.execute("ALTER TABLE tag_properties ADD COLUMN sort INTEGER NOT NULL DEFAULT 0")
+
+            # Migration for adding a column in tags
+            colonne = self._connection.execute("PRAGMA table_info(tags)").fetchall()
+            if not any(colonna[1] == "date" for colonna in colonne):
+                self._connection.execute("ALTER TABLE tags ADD COLUMN date DATE DEFAULT NULL")
 
     # ------------------------------------------------------------------ notes
 
@@ -214,7 +182,7 @@ class Store:
 
     def select_tags(self, where: str = "", params: Tuple[Any, ...] = (), limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Select tags. ``where`` is a raw SQL clause on ``tags``, e.g. ``"parent = ?"``."""
-        sql = "SELECT name, category, treed, parent, content FROM tags"
+        sql = "SELECT name, category, treed, parent, content, date FROM tags"
         if where:
             sql += f" WHERE {where}"
         sql += " ORDER BY rowid"
@@ -235,11 +203,12 @@ class Store:
             "treed": _as_bool(tag.get("treed", False)),
             "parent": tag.get("parent"),
             "content": tag.get("content") or "",
+            "date": tag.get("date") or None,
         }
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO tags (name, category, treed, parent, content) VALUES (?, ?, ?, ?, ?)",
-                (record["name"], record["category"], int(record["treed"]), record["parent"], record["content"]),
+                "INSERT INTO tags (name, category, treed, parent, content, date) VALUES (?, ?, ?, ?, ?, ?)",
+                (record["name"], record["category"], int(record["treed"]), record["parent"], record["content"], record["date"]),
             )
         return record
 
@@ -248,7 +217,7 @@ class Store:
             current = self.get_tag(name)
             if current is None:
                 raise KeyError("Tag not found.")
-            fields = {key: current[key] for key in ("category", "treed", "parent", "content")}
+            fields = {key: current[key] for key in ("category", "treed", "parent", "content", "date")}
             if "category" in changes:
                 fields["category"] = changes["category"]
             if "treed" in changes:
@@ -257,9 +226,11 @@ class Store:
                 fields["parent"] = changes["parent"]
             if "content" in changes:
                 fields["content"] = changes["content"]
+            if "date" in changes:
+                fields["date"] = changes["date"]
             self._connection.execute(
-                "UPDATE tags SET category = ?, treed = ?, parent = ?, content = ? WHERE name = ?",
-                (fields["category"], int(fields["treed"]), fields["parent"], fields["content"], name),
+                "UPDATE tags SET category = ?, treed = ?, parent = ?, content = ?, date = ? WHERE name = ?",
+                (fields["category"], int(fields["treed"]), fields["parent"], fields["content"], fields["date"], name),
             )
         return self.get_tag(name) or current
 
@@ -284,41 +255,36 @@ class Store:
     def get_tag_properties(self, tag_name: str) -> List[Dict[str, Any]]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT key, value FROM tag_properties WHERE tag_name = ? ORDER BY key",
+                "SELECT key, value, sort FROM tag_properties WHERE tag_name = ? ORDER BY sort, key",
                 (tag_name,),
             ).fetchall()
-            return [{"key": row["key"], "value": row["value"]} for row in rows]
-
-    def set_tag_properties(self, tag_name: str, properties, replace: bool = True) -> None:
-        """Validate first, then create the tag and write properties in one transaction."""
-        if not isinstance(properties, list):
-            raise ValueError("properties must be an array of {key, value} objects")
-        normalized = []
-        seen = set()
-        for prop in properties:
-            if not isinstance(prop, dict) or not isinstance(prop.get("key"), str) or not isinstance(prop.get("value"), str):
-                raise ValueError("Each property requires a string key and a string value")
-            key = prop["key"].strip()
-            if not key or any(char in key for char in "[]\r\n"):
-                raise ValueError("Property keys must be non-empty and cannot contain brackets or newlines")
-            if key in seen:
-                raise ValueError("Duplicate property key: " + key)
-            seen.add(key)
-            normalized.append((tag_name, key, prop["value"]))
-        with self._lock, self._connection:
-            self._connection.execute(
-                "INSERT OR IGNORE INTO tags (name, category) VALUES (?, ?)",
-                (tag_name, tag_category(tag_name)),
-            )
-            if replace:
-                self._connection.execute("DELETE FROM tag_properties WHERE tag_name = ?", (tag_name,))
-            self._connection.executemany(
-                "INSERT INTO tag_properties (tag_name, key, value) VALUES (?, ?, ?) "
-                "ON CONFLICT(tag_name, key) DO UPDATE SET value = excluded.value", normalized,
-            )
+            return [{"key": row["key"], "value": row["value"], "sort": row["sort"]} for row in rows]
 
     def set_tag_property(self, tag_name: str, key: str, value: str) -> None:
-        self.set_tag_properties(tag_name, [{"key": key, "value": value}], replace=False)
+        """Validate first, then create the tag and write properties in one transaction."""
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO tag_properties (tag_name, key, value) VALUES (?, ?, ?) "
+                "ON CONFLICT(tag_name, key) DO UPDATE SET value = excluded.value", (tag_name, key, value),
+            )
+
+    def set_tag_property_sort(self, tag_name: str, sort: list[str]) -> None:
+        """Validate first, then create the tag and write properties in one transaction."""
+        tag_properties = self.get_tag_properties(tag_name)
+        tag_property_keys = {prop["key"] for prop in tag_properties}
+        if not tag_properties:
+            raise KeyError(f"Tag '{tag_name}' not found.")
+        if len(sort) != len(tag_properties):
+            raise ValueError(f"Order list length {len(sort)} does not match number of properties {len(tag_properties)}.")
+        for key in sort:
+            if key not in tag_property_keys:
+                raise ValueError(f"Key '{key}' in sort list does not exist in tag properties.")
+        for idx, key in enumerate(sort):
+            with self._lock, self._connection:
+                self._connection.execute(
+                    "UPDATE tag_properties SET sort = ? WHERE tag_name = ? AND key = ?", (idx, tag_name, key),
+                )
+                
 
     def delete_tag_property(self, tag_name: str, key: str) -> None:
         with self._lock, self._connection:

@@ -1,132 +1,3 @@
-// Monaco integration for the existing plain-script application.
-// Optional, before this file: window.JOURNOTE_MONACO_VS = '/vendor/monaco/min/vs';
-// The default is pinned because this standalone integration uses Monaco's AMD build.
-const journoteEditor = {
-  load() {
-    if (window.monaco?.editor) return Promise.resolve(window.monaco);
-    if (this.loading) return this.loading;
-    this.loading = new Promise((resolve, reject) => {
-      const vs = (
-        window.JOURNOTE_MONACO_VS ||
-        'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs'
-      ).replace(/\/$/, '');
-
-      if (!window.MonacoEnvironment) {
-        const worker = new Blob([
-          `self.MonacoEnvironment={baseUrl:${JSON.stringify(vs + '/')}};importScripts(${JSON.stringify(vs + '/base/worker/workerMain.js')});`
-        ], {type: 'text/javascript'});
-        const workerUrl = URL.createObjectURL(worker);
-        window.MonacoEnvironment = {getWorkerUrl: () => workerUrl};
-        window.addEventListener('pagehide', event => {
-          if (!event.persisted) URL.revokeObjectURL(workerUrl);
-        }, {once: true});
-      }
-
-      const timer = setTimeout(
-        () => reject(new Error('Timeout caricamento Monaco')),
-        20000
-      );
-      const fail = error => {
-        clearTimeout(timer);
-        reject(error);
-      };
-      const start = () => {
-        try {
-          window.require.config({paths: {vs}});
-          window.require(['vs/editor/editor.main'], () => {
-            clearTimeout(timer);
-            resolve(window.monaco);
-          }, fail);
-        } catch (error) {
-          fail(error);
-        }
-      };
-
-      if (window.require?.config) {
-        start();
-      } else {
-        const script = document.createElement('script');
-        script.src = `${vs}/loader.js`;
-        script.onload = start;
-        script.onerror = () => fail(
-          new Error('Monaco non disponibile; editor semplice attivo')
-        );
-        document.head.appendChild(script);
-      }
-    });
-    return this.loading;
-  },
-
-  installStyles(monaco) {
-    if (document.getElementById('journote-monaco-style')) return;
-
-    monaco.editor.defineTheme('journote-markdown', {
-      base: 'vs-dark',
-      inherit: true,
-      rules: [
-        {token: 'keyword', foreground: '82B1FF', fontStyle: 'bold'},
-        {token: 'strong', fontStyle: 'bold'},
-        {token: 'emphasis', fontStyle: 'italic'}
-      ],
-      colors: {
-        'editor.background': '#18202b',
-        'editor.foreground': '#e0e6ee'
-      }
-    });
-  },
-
-  // Preserve the textarea interface used by the existing application.
-  adapter(editor, host, monaco) {
-    const model = editor.getModel();
-    return {
-      style: host.style,
-      get value() {
-        return model.getValue();
-      },
-      set value(value) {
-        editor.setValue(String(value ?? ''));
-      },
-      get selectionStart() {
-        return model.getOffsetAt(editor.getSelection().getStartPosition());
-      },
-      get selectionEnd() {
-        return model.getOffsetAt(editor.getSelection().getEndPosition());
-      },
-      focus() {
-        editor.focus();
-      },
-      setSelectionRange(start, end) {
-        const a = model.getPositionAt(start);
-        const b = model.getPositionAt(end);
-        editor.setSelection(
-          new monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)
-        );
-        editor.revealPositionInCenterIfOutsideViewport(b);
-      },
-      setRangeText(text, start, end, mode = 'preserve') {
-        const a = model.getPositionAt(start);
-        const b = model.getPositionAt(end);
-        editor.pushUndoStop();
-        editor.executeEdits('journote.replace', [{
-          range: new monaco.Range(
-            a.lineNumber, a.column, b.lineNumber, b.column
-          ),
-          text,
-          forceMoveMarkers: true
-        }]);
-
-        if (mode === 'end') {
-          this.setSelectionRange(start + text.length, start + text.length);
-        } else if (mode === 'select') {
-          this.setSelectionRange(start, start + text.length);
-        }
-        // Without an explicit cursor state Monaco tracks existing selections.
-        editor.pushUndoStop();
-      }
-    };
-  }
-};
-
 const eid = el => document.getElementById(el);
 
 const escapeHTML = value => String(value ?? '').replace(
@@ -156,7 +27,7 @@ const renderMarkdown = text => {
     simpleLineBreaks: true
   });
 
-  const processedText = text.replace(
+  const processedText = escapeHTML(text).replace(
     /#([A-Za-z0-9_.-]+)\[([^\]]+)\]/g,
     (match, tagName, key) => {
       const tag = (model.get('tags') || []).find(
@@ -176,6 +47,8 @@ const renderMarkdown = text => {
   return converter.makeHtml(processedText);
 };
 
+// URL policy only: this is not a complete HTML sanitizer.
+// For untrusted Markdown, sanitize converter output with DOMPurify before DOM insertion.
 const sanitizeRenderedMarkdown = root => {
   for (const element of root.querySelectorAll('a[href], img[src]')) {
     const attribute = element.tagName === 'IMG' ? 'src' : 'href';
@@ -191,25 +64,6 @@ const sanitizeRenderedMarkdown = root => {
   }
 };
 
-const processTagSyntaxInTextArea = text => {
-  if (!text) return text;
-  return text.replace(
-    /#([A-Za-z0-9_.-]+)\[([^\]]+)\]/g,
-    (match, tagName, key) => {
-      const tag = (model.get('tags') || []).find(
-        t => t.name === `#${tagName}`
-      );
-      if (tag && Array.isArray(tag.properties)) {
-        const propertyValue = tag.properties.find(
-          property => property.key === key
-        )?.value;
-        return propertyValue ?? match;
-      }
-      return match;
-    }
-  );
-};
-
 // HELPER
 const helper = {
   getClassfromTag(tag) {
@@ -221,29 +75,29 @@ const helper = {
     return 'FullText';
   },
   getAnonymizedTag(tag) {
-    if (tag.startsWith('#')) return tag.substring(1);
-    if (tag.startsWith('@')) return tag.substring(1);
-    if (tag.startsWith('>')) return tag.substring(1);
-    if (tag.startsWith('+')) return tag.substring(1);
-    return tag;
+    return /^[#@>+]/.test(tag) ? tag.slice(1) : tag;
+  },
+  localDate(date = new Date()) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   },
   extractTagsFromText(text, trailing_space = true) {
     const tagsfound = new Set();
     let tagRx = /(?<=^|\s)([#@>\+])([A-Za-z0-9_\-\.]+)[ ,\.;:]/g;
     if (!trailing_space) {
-      tagRx = /([#@>\+])([A-Za-z0-9_\-\.]+)/g;
+      tagRx = /(?:^|\s)([#@>+])([A-Za-z0-9_.-]+)/g;
     }
     let m;
     while ((m = tagRx.exec(text)) !== null) {
-      tagsfound.add(m[0].trim());
+      tagsfound.add(m[1] + m[2]);
     }
     return Array.from(tagsfound);
   },
   diffToToday(date1) {
-    const date2 = new Date();
-    const diffTime = date2 - date1;
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays;
+    const today = new Date();
+    // Note dates are ISO date-only strings parsed as UTC by the callers.
+    const start = Date.UTC(date1.getUTCFullYear(), date1.getUTCMonth(), date1.getUTCDate());
+    const end = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
+    return Math.round((end - start) / 86400000);
   }
 };
 
@@ -251,22 +105,20 @@ const helper = {
 const api = {
   async api(url, opts = {}) {
     console.log('[fn] api ' + url);
-    opts.headers = opts.headers || {};
-    if (
-      opts.body &&
-      typeof FormData !== 'undefined' &&
-      opts.body instanceof FormData
-    ) {
-      delete opts.headers['Content-Type'];
-    } else if (opts.body && typeof opts.body !== 'string') {
-      opts.headers['Content-Type'] = 'application/json';
+    opts = {...opts, headers: new Headers(opts.headers)};
+    if (opts.body instanceof FormData) {
+      opts.headers.delete('Content-Type');
+    } else if (opts.body != null && typeof opts.body === 'object' &&
+               !(opts.body instanceof Blob) && !(opts.body instanceof URLSearchParams) &&
+               !(opts.body instanceof ArrayBuffer) && !ArrayBuffer.isView(opts.body)) {
+      opts.headers.set('Content-Type', 'application/json');
       opts.body = JSON.stringify(opts.body);
     }
     const res = await fetch(url, opts);
     console.debug('[fn] api ' + url + ' executed', res.status);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.error?.message || res.statusText);
+      throw new Error(err.error?.message || (typeof err.error === 'string' && err.error) || res.statusText || `HTTP ${res.status}`);
     }
     if (res.status !== 204) {
       return res.json();
@@ -277,8 +129,8 @@ const api = {
     console.log('[fn] loadNotes', tag);
     const category = helper.getClassfromTag(tag);
     const anonTag = helper.getAnonymizedTag(tag);
-    const notes = await api.api(`/api/notes/${category}/${anonTag}`);
-    return notes;
+    const resp = await api.api(`/api/notes/${encodeURIComponent(category)}/${encodeURIComponent(anonTag)}`);
+    return resp;
   }
 };
 
@@ -319,44 +171,35 @@ const model = {
     subs: ['TagsBoxList', 'Calendar'],
     async reload() {
       this._v = await api.api('/api/tasks');
-      const tags = model.get('tags');
-      this._v.forEach(t => {
-        t.firstTag = null;
-        for (const tag of t.tags) {
-          const compareTag = tags.find(v => v.name === tag);
-          if (
-            ['Projects', 'Generic', 'Events'].includes(compareTag.category) &&
-            compareTag.parent == null
-          ) {
-            t.firstTag = tag;
-          }
-          if (
-            ['Projects', 'Generic', 'Events'].includes(compareTag.category) &&
-            compareTag.parent != null
-          ) {
-            t.firstTag = tag;
+      const tags = new Map((model.get('tags') || []).map(tag => [tag.name, tag]));
+      for (const task of this._v) {
+        // Preserve the previous rule: the last eligible tag wins.
+        task.firstTag = null;
+        for (const name of task.tags || []) {
+          if (['Projects', 'Generic', 'Events'].includes(tags.get(name)?.category)) {
+            task.firstTag = name;
           }
         }
-        return t;
-      });
+      }
     }
   },
-  tagsBox_projects: {_v: false, subs: ['TagsBoxList']},
-  tagsBox_task: {_v: true, subs: ['TagsBoxList']},
-  tagsBox_events: {_v: false, subs: ['TagsBoxList']},
-  tagsBox_persons: {_v: false, subs: ['TagsBoxList']},
-  tagsBox_generic: {_v: false, subs: ['TagsBoxList']},
+  tagsBox_projects: {_v: false, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
+  tagsBox_task: {_v: true, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
+  tagsBox_events: {_v: false, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
+  tagsBox_persons: {_v: false, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
+  tagsBox_generic: {_v: false, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
   tagsVisible: {_v: [], subs: []},
-  tagsActive: {_v: [], subs: []},
+  tagsActive: {_v: null, subs: []},
   leftBarVisible: {_v: true, subs: ['LeftBar']}
 };
 
 // BUSINESS LOGIC LAYER
 const businessLogic = {
+
   async saveNote(raw, tdate) {
     if (!raw.trim()) return null;
     const assignment = raw.trim().match(
-      /^(#[A-Za-z0-9_.-]+)\[([^\[\]\r\n]+)\][ \t]+(\S[\s\S]*)$/
+      /^(#[A-Za-z0-9_.-]+)\[([^\[\]\r\n]+)\][ \t\r\n]+(\S[\s\S]*)$/
     );
     if (assignment && assignment[2].trim()) {
       return api.api(
@@ -364,10 +207,8 @@ const businessLogic = {
         {
           method: 'PATCH',
           body: {
-            properties: [{
-              key: assignment[2].trim(),
-              value: assignment[3].trim()
-            }]
+            key: assignment[2].trim(),
+            value: assignment[3].trim()
           }
         }
       );
@@ -376,16 +217,29 @@ const businessLogic = {
       method: 'POST',
       body: {
         text: raw,
-        date: tdate || new Date().toISOString().slice(0, 10)
+        date: tdate || helper.localDate()
       }
     });
+    console.log(response);
     if (!response?.note?.id && response?.kind !== 'tag_property') {
       throw new Error('Error saving note');
     }
     return response;
   },
 
-  async editNote(note, previousTags = note.tags, previousDate = note.date) {
+  async sortTagProperties(tag, order) {
+    return api.api(
+      `/api/tags/${encodeURIComponent(this.getTagCategory(tag))}/${encodeURIComponent(this.getAnonymizedTag(tag))}/properties/order`,
+      {
+        method: 'PUT',
+        body: {
+          order
+        }
+      }
+    );
+  },
+
+  async editNote(note) {
     const response = await api.api(`/api/notes/${note.id}`, {
       method: 'PATCH',
       body: {
@@ -393,28 +247,16 @@ const businessLogic = {
         date: note.date
       }
     });
-    if (!response || !response.note.id) {
-      alert('Error saving note');
-      return;
-    }
+    if (!response?.note?.id) throw new Error('Error saving note');
     return response.note;
   },
 
   getTagCategory(tag) {
-    if (tag.startsWith('#')) return 'Projects';
-    if (tag.startsWith('@')) return 'Persons';
-    if (tag.startsWith('>')) return 'Events';
-    if (tag.startsWith('+')) return 'Generic';
-    if (/^\d{4}-\d{2}-\d{2}$/.test(tag)) return 'Journal';
-    return 'FullText';
+    return helper.getClassfromTag(tag);
   },
 
   getAnonymizedTag(tag) {
-    if (tag.startsWith('#')) return tag.substring(1);
-    if (tag.startsWith('@')) return tag.substring(1);
-    if (tag.startsWith('>')) return tag.substring(1);
-    if (tag.startsWith('+')) return tag.substring(1);
-    return tag;
+    return helper.getAnonymizedTag(tag);
   },
 
   getTaskPriority(task) {
@@ -422,25 +264,23 @@ const businessLogic = {
     return task.task;
   },
 
-  buildTagTree(tags, tasks) {
+  buildTagTree(tags = [], tasks = []) {
+    const nodes = new Map(tags.map(tag => [tag.name, {...tag, tasks: [], children: []}]));
     const tree = [];
-    const childrenOf = {};
-    tags.forEach(tag => {
-      childrenOf[tag.name] = {...tag, tasks: [], children: []};
-    });
-    tags.forEach(tag => {
-      if (!tag.parent || tag.parent === '') {
-        tree.push(childrenOf[tag.name]);
+    for (const node of nodes.values()) {
+      const seen = new Set([node.name]);
+      let ancestor = nodes.get(node.parent);
+      let cyclic = false;
+      while (ancestor) {
+        if (seen.has(ancestor.name)) { cyclic = true; break; }
+        seen.add(ancestor.name);
+        ancestor = nodes.get(ancestor.parent);
       }
-      if (tag.parent && childrenOf[tag.parent]) {
-        childrenOf[tag.parent].children.push(childrenOf[tag.name]);
-      }
-    });
-    tasks.forEach(task => {
-      if (task.firstTag != null && task.firstTag != '') {
-        childrenOf[task.firstTag].tasks.push(task);
-      }
-    });
+      const parent = nodes.get(node.parent);
+      if (parent && !cyclic) parent.children.push(node);
+      else tree.push(node);
+    }
+    for (const task of tasks) nodes.get(task.firstTag)?.tasks.push(task);
     return tree;
   },
 
@@ -462,9 +302,8 @@ const businessLogic = {
 
   getActionRequiredItems() {
     try {
-      return JSON.parse(
-        localStorage.getItem('journoteActionRequiredTags') || '[]'
-      );
+      const items = JSON.parse(localStorage.getItem('journoteActionRequiredTags') || '[]');
+      return Array.isArray(items) ? items.filter(item => typeof item === 'string') : [];
     } catch (error) {
       console.error('Error reading action required tags:', error);
       return [];
@@ -488,116 +327,51 @@ const businessLogic = {
       'journoteActionRequiredTags',
       JSON.stringify(pendingTags)
     );
+  },
+
+  async updateTagDate(tag, newDate) {
+    const anonTag = this.getAnonymizedTag(tag.name);
+    const category = this.getTagCategory(tag.name);
+    console.log('[fn] updateTagDate', tag, newDate);
+    await api.api(`/api/tags/${category}/${anonTag}`, {
+      method: 'patch',
+      body: { date: newDate }
+    });
   }
 };
 
 // PAGES
 const page = {
+  renderShell(component, mainId) {
+    view.EditorWrap.dispose();
+    if (!view.mount(component, 'app')) return;
+    component.el.append(view.el('aside', {id: 'LeftBar'}), view.el('div', {id: mainId}));
+    view.LeftBar.render();
+  },
+
   home: {
     filterViews: {},
+    pendingTabs: new Map(),
     shortcutsBound: false,
-    render() {
-      view.EditorWrap.dispose();
-      this.el = eid('app');
-      this.el.innerHTML = '';
-      this.el.appendChild(view.createEl('aside', {id: 'LeftBar'}));
-      this.el.appendChild(view.createEl('div', {id: 'Main'}));
-      view.LeftBar.render();
+    async render() {
+      const visible = [...model.get('tagsVisible')];
+      this.pendingTabs = new Map();
+      page.renderShell(this, 'Main');
       view.Main.render();
-
-      const tagsVisible = model.get('tagsVisible');
+      const root = eid('Main');
       model.set('tagsVisible', []);
-      (async () => {
-        await this.addTagview(new Date().toISOString().slice(0, 10));
-        for (const x of tagsVisible) {
-          if (this.filterViews[x]) {
-            await this.addFilterview(this.filterViews[x], null, x);
-          } else {
-            await this.addTagview(x);
-          }
+      model.set('tagsActive', null);
+
+      for (const key of new Set([helper.localDate(), ...visible])) {
+        if (eid('Main') !== root) return;
+        try {
+          if (this.filterViews[key]) await this.addFilterview(this.filterViews[key], null, key);
+          else await this.addTagview(key);
+        } catch (error) {
+          if (eid('Main') === root) console.error('Impossibile aprire la scheda:', key, error);
         }
-      })();
-
-      if (!this.shortcutsBound) {
-        this.shortcutsBound = true;
-        document.addEventListener('keydown', ev => {
-          if (!eid('Main')) return;
-          if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
-            if (ev.key.toLowerCase() === 'n') {
-              ev.preventDefault();
-              const editor = view.EditorWrap.ed;
-              editor.focus();
-              editor.setSelectionRange(
-                editor.value.length,
-                editor.value.length
-              );
-            }
-
-            if (ev.key.toLowerCase() === 't') {
-              ev.preventDefault();
-              const today = new Date().toISOString().slice(0, 10);
-              page.home.addTagview(today);
-            }
-
-            if (ev.key.toLowerCase() === 'w') {
-              ev.preventDefault();
-              page.home.removeTagview(model.get('tagsActive'));
-            }
-
-            if (!isNaN(parseInt(ev.key, 10))) {
-              ev.preventDefault();
-              const evIndex = parseInt(ev.key, 10) - 1;
-              console.log('Numeric key pressed:', evIndex);
-              if (
-                evIndex >= 0 &&
-                evIndex < model.get('tagsVisible').length
-              ) {
-                page.home.activateTagview(
-                  model.get('tagsVisible')[evIndex]
-                );
-              }
-            }
-
-            if (ev.key === 'ArrowLeft') {
-              ev.preventDefault();
-              const activeTab = model.get('tagsActive');
-              const visible = model.get('tagsVisible');
-              const currentIndex = visible.findIndex(t => t === activeTab);
-              console.log(currentIndex);
-              if (currentIndex >= 1) {
-                page.home.activateTagview(
-                  model.get('tagsVisible')[currentIndex - 1]
-                );
-              }
-            }
-
-            if (ev.key === 'ArrowRight') {
-              ev.preventDefault();
-              const activeTab = model.get('tagsActive');
-              const visible = model.get('tagsVisible');
-              const currentIndex = visible.findIndex(t => t === activeTab);
-              console.log(currentIndex);
-              if (currentIndex < visible.length - 1) {
-                page.home.activateTagview(
-                  model.get('tagsVisible')[currentIndex + 1]
-                );
-              }
-            }
-
-            if (ev.key === 'ArrowUp') {
-              ev.preventDefault();
-              const activeTab = model.get('tagsActive');
-              if (activeTab) view.Main.maximizeTab(activeTab);
-            }
-
-            if (ev.key === 'ArrowDown') {
-              ev.preventDefault();
-              const activeTab = model.get('tagsActive');
-              if (activeTab) view.Main.maximizeTab(activeTab);
-            }
-          }
-        });
       }
+      return root;
     },
 
     async load() {
@@ -609,31 +383,52 @@ const page = {
       await model.tags.reload();
       await model.tasks.reload();
       view.TagsBoxList.render();
+      view.Main.refreshTagDetails();
+      view.Calendar.render();
+      await view.JournalBox.render();
       for (const [key, rule] of Object.entries(this.filterViews)) {
         if (!model.get('tagsVisible').includes(key)) continue;
         const notes = await api.api('/api/notes/filter', {
           method: 'POST',
           body: {rule}
         });
-        view.Main.updateTab(key, notes);
+        if (eid('Main') && model.get('tagsVisible').includes(key)) view.Main.updateTab(key, notes);
       }
     },
 
-    async addTagview(tag) {
-      console.log('[fn] addTagview', tag);
-      console.log('[fn] addTagview', model.get('tagsVisible'));
-      if (model.get('tagsVisible').includes(tag)) {
-        console.log('Tagview already exists');
-        page.home.activateTagview(tag);
+    async ensureHome() {
+      if (eid('Main')) return;
+      history.pushState(null, '', '#/home');
+      await router();
+      if (!eid('Main')) throw new Error('Navigazione alla home interrotta');
+    },
+
+    async openTab(key, load, label = key) {
+      await this.ensureHome();
+      if (model.get('tagsVisible').includes(key)) {
+        this.activateTagview(key);
         return;
       }
-      const tagsVisible = model.set('tagsVisible', visible => {
-        visible.push(tag);
-        return visible;
-      });
-      const matched = await api.loadNotes(tag);
-      view.TopBar.addTab(tag, matched);
-      view.Main.addTab(tag, matched);
+      const pending = this.pendingTabs;
+      if (pending.has(key)) return pending.get(key);
+      const root = eid('Main');
+      const request = (async () => {
+        const resp = await load();
+        const notes = resp.notes || [];
+        const events = resp.events || [];
+        if (root !== eid('Main') || this.pendingTabs !== pending || pending.get(key) !== request) return;
+        model.set('tagsVisible', visible => [...visible, key]);
+        view.TopBar.addTab(key, notes, label);
+        view.Main.addTab(key, notes, events, label);
+      })();
+      pending.set(key, request);
+      try { return await request; }
+      finally { if (pending.get(key) === request) pending.delete(key); }
+    },
+
+    async addTagview(tag) {
+      if (!tag) return;
+      return this.openTab(tag, () => api.loadNotes(tag));
     },
 
     async focusTask(task) {
@@ -658,36 +453,11 @@ const page = {
     },
 
     async addFilterview(rule, notes = null, key = null) {
-      if (!eid('Main')) {
-        const homeReady = new Promise(resolve => {
-          window.addEventListener(
-            'journote-home-ready',
-            resolve,
-            {once: true}
-          );
-        });
-        const alreadyHome = location.hash === '#/home';
-        location.hash = '/home';
-        if (alreadyHome) {
-          await this.load();
-          this.render();
-          window.dispatchEvent(new Event('journote-home-ready'));
-        }
-        await homeReady;
-      }
-
-      const filterKey =
-        key || `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const filterKey = key || `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.filterViews[filterKey] = rule;
-      model.set('tagsVisible', visible => [...visible, filterKey]);
-
-      const matched = notes ?? await api.api('/api/notes/filter', {
-        method: 'POST',
-        body: {rule}
-      });
-      const label = `Filtro: ${rule}`;
-      view.TopBar.addTab(filterKey, matched, label);
-      view.Main.addTab(filterKey, matched, label);
+      return this.openTab(filterKey, () => notes ?? api.api('/api/notes/filter', {
+        method: 'POST', body: {rule}
+      }), `Filtro: ${rule}`);
     },
 
     activateTagview(key) {
@@ -702,10 +472,11 @@ const page = {
 
     removeTagview(tag) {
       console.log('[fn] removeTagview', tag);
-      if (new Date().toISOString().slice(0, 10) == tag) {
+      if (helper.localDate() == tag) {
         console.log('[fn] removeTagview - dont remove today', tag);
         return;
       }
+      this.pendingTabs?.delete(tag);
       delete this.filterViews[tag];
       const tagsVisible = model.set(
         'tagsVisible',
@@ -714,6 +485,7 @@ const page = {
       console.log(tagsVisible);
       view.TopBar.removeTab(tag);
       view.Main.removeTab(tag);
+      view.Main.resetFullWidth();
       if (model.get('tagsActive') == tag) {
         page.home.activateTagview(tagsVisible[tagsVisible.length - 1]);
       }
@@ -722,12 +494,7 @@ const page = {
 
   calendar: {
     render() {
-      view.EditorWrap.dispose();
-      this.el = eid('app');
-      this.el.innerHTML = '';
-      this.el.appendChild(view.createEl('aside', {id: 'LeftBar'}));
-      this.el.appendChild(view.createEl('div', {id: 'CalendarMain'}));
-      view.LeftBar.render();
+      page.renderShell(this, 'CalendarMain');
       view.Calendar.render();
     },
     async load() {
@@ -739,181 +506,80 @@ const page = {
 
 // VIEW
 const view = {
-  createEl(typ, options) {
-    const e = document.createElement(typ);
+  el(type, options = {}, children = []) {
+    const element = document.createElement(type);
     for (const [key, value] of Object.entries(options)) {
-      if (value && typeof value === 'object') {
-        for (const [subkey, subvalue] of Object.entries(value)) {
-          e[key][subkey] = subvalue;
+      if (value == null) continue;
+      if (key === 'style' && typeof value === 'object') {
+        Object.assign(element.style, value);
+      } else if (key === 'dataset') {
+        Object.assign(element.dataset, value);
+      } else if (key === 'attrs') {
+        for (const [name, attribute] of Object.entries(value)) {
+          if (attribute != null) element.setAttribute(name, String(attribute));
         }
+      } else if (key.startsWith('aria-') || key.startsWith('data-') || key === 'role') {
+        element.setAttribute(key, String(value));
+      } else if (key === 'tabindex') {
+        element.tabIndex = value;
+      } else if (key === 'style') {
+        element.style.cssText = value;
+      } else if (key.startsWith('on') && typeof value === 'function') {
+        element[key] = function(event) {
+          return view.run(() => value.call(this, event));
+        };
       } else {
-        e[key] = value;
+        element[key] = value;
       }
     }
-    return e;
+    element.append(...(Array.isArray(children) ? children : [children]));
+    return element;
+  },
+
+  // render(): acquire root, clear it, build children, render child views.
+  mount(component, id) {
+    component.el = eid(id);
+    if (!component.el) return null;
+    component.el.replaceChildren();
+    return component.el;
+  },
+
+  async run(action) {
+    return action();
+  },
+
+  resizeColumn(element, handle, min, max, onEnd = () => {}) {
+    handle.onpointerdown = event => {
+      if (event.button !== 0) return;
+      const startX = event.clientX;
+      const startWidth = element.offsetWidth;
+      handle.setPointerCapture(event.pointerId);
+      handle.onpointermove = move => {
+        const width = Math.min(max, Math.max(min, startWidth + move.clientX - startX));
+        element.style.flex = `0 0 ${width}px`;
+      };
+      handle.onlostpointercapture = () => {
+        handle.onpointermove = null;
+        onEnd();
+      };
+      event.preventDefault();
+    };
   },
 
   EditorWrap: {
-    dispose() {
-      this.generation = (this.generation || 0) + 1;
-      this.monacoEditor?.dispose();
-      this.monacoModel?.dispose();
-      this.monacoEditor = null;
-      this.monacoModel = null;
-    },
 
-    async upgradeEditor(generation, textarea) {
-      let editor;
-      let host;
-      try {
-        const monaco = await journoteEditor.load();
-        if (this.generation !== generation || !textarea.isConnected) return;
-
-        journoteEditor.installStyles(monaco);
-        const focused = document.activeElement === textarea;
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-
-        host = view.createEl('div', {
-          className: 'journote-code-editor'
-        });
-        textarea.before(host);
-
-        const textModel = monaco.editor.createModel(
-          textarea.value,
-          'markdown'
-        );
-        this.monacoModel = textModel;
-
-        editor = monaco.editor.create(host, {
-          model: textModel,
-          theme: 'journote-markdown',
-          automaticLayout: true,
-          fontSize: 14,
-          lineHeight: 22,
-          fontFamily: 'Consolas, "Liberation Mono", monospace',
-          minimap: {enabled: false},
-          wordWrap: 'on',
-          scrollBeyondLastLine: false,
-          lineNumbers: 'off',
-          glyphMargin: false,
-          folding: false,
-          lineDecorationsWidth: 8,
-          overviewRulerLanes: 0,
-          hideCursorInOverviewRuler: true,
-          renderLineHighlight: 'none',
-          roundedSelection: true,
-          tabSize: 2,
-          insertSpaces: true,
-          detectIndentation: false,
-          multiCursorModifier: 'alt',
-          multiCursorMergeOverlapping: true,
-          quickSuggestions: false,
-          wordBasedSuggestions: 'off',
-          padding: {top: 10, bottom: 10},
-          ariaLabel: 'Testo della nota in Markdown',
-          scrollbar: {
-            vertical: 'auto',
-            horizontal: 'hidden',
-            alwaysConsumeMouseWheel: false
-          }
-        });
-
-        textarea.remove();
-        host.id = 'Editor';
-        this.monacoEditor = editor;
-        this.ed = journoteEditor.adapter(editor, host, monaco);
-        this.ed.setSelectionRange(start, end);
-
-        const decorations = editor.createDecorationsCollection();
-        const highlightTags = () => {
-          const source = textModel.getValue();
-          const items = [];
-          // "# Title", "+ list" and "> quote" remain Markdown constructs.
-          const pattern = /(^|\s)([#@+>])([A-Za-z0-9_.-]+)/g;
-          let match;
-
-          while ((match = pattern.exec(source))) {
-            const offset = match.index + match[1].length;
-            const a = textModel.getPositionAt(offset);
-            const b = textModel.getPositionAt(
-              offset + match[2].length + match[3].length
-            );
-
-            items.push({
-              range: new monaco.Range(
-                a.lineNumber, a.column, b.lineNumber, b.column
-              ),
-              options: {
-                inlineClassName: {
-                  '#': 'jn-project',
-                  '+': 'jn-generic',
-                  '>': 'jn-event',
-                  '@': 'jn-person'
-                }[match[2]]
-              }
-            });
-          }
-          decorations.set(items);
-        };
-
-        editor.onDidChangeModelContent(() => {
-          highlightTags();
-          this.resizeEditor();
-        });
-        editor.onDidContentSizeChange(() => this.resizeEditor());
-
-        editor.addAction({
-          id: 'journote.next-occurrence',
-          label: 'Aggiungi cursore alla prossima occorrenza',
-          keybindings: [
-            monaco.KeyMod.CtrlCmd |
-            monaco.KeyMod.Alt |
-            monaco.KeyCode.KeyD
-          ],
-          run: ed => ed.getAction(
-            'editor.action.addSelectionToNextFindMatch'
-          ).run()
-        });
-
-        highlightTags();
-        this.resizeEditor();
-        if (focused) editor.focus();
-      } catch (error) {
-        if (this.generation !== generation) return;
-        editor?.dispose();
-        this.monacoModel?.dispose();
-        this.monacoEditor = null;
-        this.monacoModel = null;
-        host?.remove();
-
-        if (
-          this.generation !== generation ||
-          !this.editorField?.isConnected
-        ) return;
-
-        if (!textarea.isConnected) this.editorField.prepend(textarea);
-        this.ed = textarea;
-        console.warn('Monaco initialization failed:', error);
-        this.status.textContent =
-          'Editor semplice attivo: impossibile caricare Monaco.';
-        this.status.dataset.state = 'error';
-      }
-    },
-
-    render() {
+    async render() {
       this.dispose();
       const generation = this.generation;
       this.currentNote = null;
-      this.el = eid('EditorWrap');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'EditorWrap')) return;
 
       this.editorField = this.el.appendChild(
-        view.createEl('div', {className: 'editor-field'})
+        view.el('div', {className: 'editor-field'})
       );
 
       this.ed = this.editorField.appendChild(
-        view.createEl('textarea', {
+        view.el('textarea', {
           id: 'Editor',
           className: 'editor-area',
           placeholder: 'Scrivi una nota in Markdown...',
@@ -924,36 +590,26 @@ const view = {
       this.ed.setAttribute('aria-label', 'Testo della nota in Markdown');
 
       this.status = this.editorField.appendChild(
-        view.createEl('div', {
+        view.el('div', {
           id: 'EditorStatus',
           className: 'editor-status'
         })
       );
       this.status.setAttribute('aria-live', 'polite');
-
-      const EditorMinimizeBtn = this.editorField.appendChild(
-        view.createEl('button', {
-          id: 'EditorMinimizeBtn',
-          className: 'btn secondary editor-minimize-btn',
-          textContent: 'Minimize',
-          title: 'Minimize editor',
-          'aria-label': 'Minimize editor'
-        })
-      );
       this.pendingImageUploads = 0;
 
       const EditorCtrl = this.el.appendChild(
-        view.createEl('div', {id: 'EditorCtrl'})
+        view.el('div', {id: 'EditorCtrl'})
       );
       const EditorSaveBtn = EditorCtrl.appendChild(
-        view.createEl('button', {
+        view.el('button', {
           id: 'EditorSaveBtn',
           className: 'btn primary',
           textContent: 'Save'
         })
       );
       const EditorMaximizeBtn = EditorCtrl.appendChild(
-        view.createEl('button', {
+        view.el('button', {
           id: 'EditorMaximizeBtn',
           className: 'btn secondary',
           textContent: 'Maximize',
@@ -962,15 +618,15 @@ const view = {
         })
       );
       const EditorUpdateBtn = EditorCtrl.appendChild(
-        view.createEl('button', {
+        view.el('button', {
           id: 'EditorUpdateBtn',
-          className: 'btn secondary',
+          className: 'btn primary',
           textContent: 'Update',
           style: 'display:none;'
         })
       );
       const EditorClearBtn = EditorCtrl.appendChild(
-        view.createEl('button', {
+        view.el('button', {
           id: 'EditorClearBtn',
           className: 'btn info',
           textContent: 'Clear',
@@ -978,7 +634,6 @@ const view = {
         })
       );
 
-      this.ed.addEventListener('input', () => this.resizeEditor());
 
       this.editorField.addEventListener('paste', async ev => {
         const imageItem = Array.from(ev.clipboardData?.items || []).find(
@@ -1048,25 +703,16 @@ const view = {
           if (this.generation !== generation) return;
           this.pendingImageUploads -= 1;
           this.updateImageUploadState();
-          this.resizeEditor();
         }
       }, true);
 
       this.editorField.addEventListener('keydown', async ev => {
         if (ev.isComposing) return;
 
-        if (
-          ev.ctrlKey &&
-          ev.altKey &&
-          !ev.shiftKey &&
-          ev.key.toLowerCase() === 'd' &&
-          this.monacoEditor
-        ) {
+        if (ev.key === 'd' && ev.ctrlKey && !ev.altKey && !ev.shiftKey && this.monacoEditor) {
           ev.preventDefault();
           ev.stopImmediatePropagation();
-          this.monacoEditor.getAction(
-            'editor.action.addSelectionToNextFindMatch'
-          ).run();
+          this.monacoEditor.getAction('editor.action.addSelectionToNextFindMatch').run();
           return;
         }
 
@@ -1090,29 +736,19 @@ const view = {
           return;
         }
 
-        if (
-          ev.ctrlKey &&
-          !ev.altKey &&
-          !ev.shiftKey &&
-          ev.key.toLowerCase() === 'd'
-        ) {
+        if (ev.key === 'd' && ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
           ev.preventDefault();
           ev.stopImmediatePropagation();
           this.ed.setRangeText(
-            new Date().toISOString().slice(0, 10),
+            helper.localDate(),
             this.ed.value.length,
             this.ed.value.length,
             'end'
           );
-          this.resizeEditor();
           return;
         }
 
-        if (
-          ev.ctrlKey &&
-          !ev.altKey &&
-          ['b', 'i', 'k'].includes(ev.key.toLowerCase())
-        ) {
+        if (['b', 'i', 'k'].includes(ev.key) && ev.ctrlKey && !ev.altKey) {
           ev.preventDefault();
           ev.stopImmediatePropagation();
           const marker = ev.key.toLowerCase() === 'b'
@@ -1131,9 +767,6 @@ const view = {
       EditorMaximizeBtn.addEventListener('click', ev => {
         this.toggleMaximize();
       });
-      EditorMinimizeBtn.addEventListener('click', ev => {
-        this.toggleMaximize();
-      });
       EditorClearBtn.addEventListener('click', ev => {
         this.clear();
       });
@@ -1142,59 +775,581 @@ const view = {
         this.editNote();
       });
 
-      const hint = view.createEl('div', {
-        className: 'editor-hint',
-        textContent:
-          'Ctrl+Alt+D: cursore successivo · Alt+clic: aggiungi cursore · Ctrl+B/I/K: grassetto/corsivo/codice · Ctrl+Enter: salva'
+      // Build the controls synchronously; keep the textarea usable while loading.
+      // A stale render must never attach Monaco to a newer page.
+      const textarea = this.ed;
+      let editor;
+      let host;
+      try {
+        const monaco = await this.loadMonaco();
+        if (this.generation !== generation || !textarea.isConnected) return;
+
+        this.installEditorTheme(monaco);
+        const focused = document.activeElement === textarea;
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+
+        host = view.el('div', {
+          id: 'Editor',
+          className: 'journote-code-editor'
+        });
+        textarea.before(host);
+
+        const textModel = monaco.editor.createModel(
+          textarea.value,
+          'markdown'
+        );
+        this.monacoModel = textModel;
+
+        editor = monaco.editor.create(host, {
+          model: textModel,
+          theme: 'journote-markdown',
+          // automaticLayout: true,
+          fontSize: 14,
+          lineHeight: 22,
+          fontFamily: '"IBM Plex Mono", monospace',
+          minimap: {enabled: false},
+          wordWrap: 'on',
+          scrollBeyondLastLine: false,
+          lineNumbers: 'on',
+          glyphMargin: false,
+          folding: false,
+          lineNumbersMinChars: 3,
+          lineDecorationsWidth: 8,
+          overviewRulerLanes: 0,
+          hideCursorInOverviewRuler: true,
+          renderLineHighlight: 'all',
+          renderLineHighlightOnlyWhenFocus: true,
+          roundedSelection: true,
+          tabSize: 2,
+          insertSpaces: true,
+          detectIndentation: false,
+          multiCursorModifier: 'alt',
+          multiCursorMergeOverlapping: true,
+          quickSuggestions: false,
+          wordBasedSuggestions: 'off',
+          padding: {top: 0, bottom: 0},
+          ariaLabel: 'Testo della nota in Markdown',
+          scrollbar: {
+            vertical: 'auto',
+            horizontal: 'hidden',
+            alwaysConsumeMouseWheel: false
+          }
+        });
+
+        if (document.fonts?.ready) {
+          document.fonts.ready.then(() => {
+            if (host.isConnected) monaco.editor.remeasureFonts();
+          });
+        }
+        this.attachAutocomplete(editor, monaco);
+
+        textarea.remove();
+        this.monacoEditor = editor;
+        this.ed = this.createEditorAdapter(editor, host, monaco);
+        this.ed.setSelectionRange(start, end);
+
+        const decorations = editor.createDecorationsCollection();
+        const highlightTags = () => {
+          const source = textModel.getValue();
+          const items = [];
+          // "# Title", "+ list" and "> quote" remain Markdown constructs.
+          const pattern = /(^|\s)([#@+>])([A-Za-z0-9_.-]+)/g;
+          let match;
+
+          while ((match = pattern.exec(source))) {
+            const offset = match.index + match[1].length;
+            const a = textModel.getPositionAt(offset);
+            const b = textModel.getPositionAt(
+              offset + match[2].length + match[3].length
+            );
+
+            items.push({
+              range: new monaco.Range(
+                a.lineNumber, a.column, b.lineNumber, b.column
+              ),
+              options: {
+                inlineClassName: {
+                  '#': 'jn-project',
+                  '+': 'jn-generic',
+                  '>': 'jn-event',
+                  '@': 'jn-person'
+                }[match[2]]
+              }
+            });
+          }
+          decorations.set(items);
+        };
+
+        editor.onDidChangeModelContent(() => {
+          highlightTags();
+        });
+
+        editor.addAction({
+          id: 'journote.next-occurrence',
+          label: 'Aggiungi cursore alla prossima occorrenza',
+          keybindings: [
+            monaco.KeyMod.CtrlCmd |
+            monaco.KeyMod.Alt |
+            monaco.KeyCode.KeyD
+          ],
+          run: ed => ed.getAction(
+            'editor.action.addSelectionToNextFindMatch'
+          ).run()
+        });
+
+        highlightTags();
+        if (focused) editor.focus();
+      } catch (error) {
+        if (this.generation !== generation) return;
+        editor?.dispose();
+        this.monacoModel?.dispose();
+        this.monacoEditor = null;
+        this.monacoModel = null;
+        host?.remove();
+
+        if (
+          this.generation !== generation ||
+          !this.editorField?.isConnected
+        ) return;
+
+        if (!textarea.isConnected) this.editorField.prepend(textarea);
+        this.ed = textarea;
+        console.warn('Monaco initialization failed:', error);
+        this.status.textContent =
+          'Editor semplice attivo: impossibile caricare Monaco.';
+        this.status.dataset.state = 'error';
+      }
+    },
+
+    // Monaco belongs to this view; only the runtime load is shared across renders.
+    // Optional override: window.JOURNOTE_MONACO_VS = '/vendor/monaco/min/vs'.
+    loadMonaco() {
+      if (window.monaco?.editor) return Promise.resolve(window.monaco);
+      if (this.loading) return this.loading;
+      this.loading = new Promise((resolve, reject) => {
+        const vs = (
+          window.JOURNOTE_MONACO_VS ||
+          'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs'
+        ).replace(/\/$/, '');
+
+        if (!window.MonacoEnvironment) {
+          const worker = new Blob([
+            `self.MonacoEnvironment={baseUrl:${JSON.stringify(vs + '/')}};importScripts(${JSON.stringify(vs + '/base/worker/workerMain.js')});`
+          ], {type: 'text/javascript'});
+          const workerUrl = URL.createObjectURL(worker);
+          window.MonacoEnvironment = {getWorkerUrl: () => workerUrl};
+          window.addEventListener('pagehide', event => {
+            if (!event.persisted) URL.revokeObjectURL(workerUrl);
+          }, {once: true});
+        }
+
+        const timer = setTimeout(
+          () => reject(new Error('Timeout caricamento Monaco')),
+          20000
+        );
+        const fail = error => {
+          clearTimeout(timer);
+          reject(error);
+        };
+        const start = () => {
+          try {
+            window.require.config({paths: {vs}});
+            window.require(['vs/editor/editor.main'], () => {
+              clearTimeout(timer);
+              resolve(window.monaco);
+            }, fail);
+          } catch (error) {
+            fail(error);
+          }
+        };
+
+        if (window.require?.config) {
+          start();
+        } else {
+          const script = view.el('script', {
+            src: `${vs}/loader.js`,
+            onload: start
+          });
+          script.onerror = () => fail(
+            new Error('Monaco non disponibile; editor semplice attivo')
+          );
+          document.head.appendChild(script);
+        }
+      }).catch(error => {
+        this.loading = null;
+        throw error;
       });
-      this.editorField.appendChild(hint);
-      this.upgradeEditor(generation, this.ed);
+      return this.loading;
+    },
+
+    readEditorToken(name, fallback) {
+      return getComputedStyle(document.documentElement)
+        .getPropertyValue(name)
+        .trim() || fallback;
+    },
+
+    readEditorColor(name, fallback) {
+      const value = this.readEditorToken(name, fallback);
+      return /^#[\da-f]{6}$/i.test(value) ? value : fallback;
+    },
+
+    installEditorTheme(monaco) {
+      const colors = {
+        paper: this.readEditorColor('--paper', '#ffffff'),
+        paperMuted: this.readEditorColor('--paper-muted', '#f6f9f7'),
+        ink: this.readEditorColor('--ink', '#25332d'),
+        muted: this.readEditorColor('--muted', '#68766f'),
+        border: this.readEditorColor('--border', '#d8e2dc'),
+        accent: this.readEditorColor('--accent', '#286b56'),
+        accentStrong: this.readEditorColor('--accent-strong', '#1b5744'),
+        accentSoft: this.readEditorColor('--accent-soft', '#e1eee7'),
+        error: this.readEditorColor('--c-error', '#d34e4e'),
+        project: this.readEditorColor('--c-project', '#286b56'),
+        event: this.readEditorColor('--c-event', '#366f91'),
+        generic: this.readEditorColor('--c-generic', '#a7503b'),
+        person: this.readEditorColor('--c-person', '#886414')
+      };
+
+      monaco.editor.defineTheme('journote-markdown', {
+        base: 'vs',
+        inherit: true,
+        rules: [
+          {
+            token: '',
+            foreground: colors.ink.slice(1)
+          },
+          {
+            token: 'keyword',
+            foreground: colors.accentStrong.slice(1),
+            fontStyle: 'bold'
+          },
+          {
+            token: 'strong',
+            foreground: colors.ink.slice(1),
+            fontStyle: 'bold'
+          },
+          {
+            token: 'emphasis',
+            foreground: colors.ink.slice(1),
+            fontStyle: 'italic'
+          },
+          {
+            token: 'string',
+            foreground: colors.generic.slice(1)
+          },
+          {
+            token: 'string.link',
+            foreground: colors.event.slice(1)
+          },
+          {
+            token: 'variable',
+            foreground: colors.event.slice(1)
+          },
+          {
+            token: 'comment',
+            foreground: colors.muted.slice(1)
+          },
+          {
+            token: 'tag',
+            foreground: colors.accent.slice(1)
+          }
+        ],
+        colors: {
+          'editor.background': colors.paper,
+          'editor.foreground': colors.ink,
+          'editorCursor.foreground': colors.accentStrong,
+
+          'editor.selectionBackground': '#c9dfd2',
+          'editor.inactiveSelectionBackground': colors.accentSoft,
+          'editor.selectionHighlightBackground': '#e1eee780',
+          'editor.selectionHighlightBorder': '#a5c6b4',
+
+          'editor.wordHighlightBackground': '#e1eee780',
+          'editor.wordHighlightStrongBackground': '#c9dfd280',
+          'editor.findMatchBackground': '#ead8a3',
+          'editor.findMatchHighlightBackground': '#f8f0d9',
+          'editor.findMatchBorder': '#bd8b22',
+
+          'editor.lineHighlightBackground': colors.paperMuted,
+          'editorLineNumber.foreground': colors.muted,
+          'editorLineNumber.activeForeground': colors.accentStrong,
+          'editorGutter.background': colors.paper,
+          'editorWhitespace.foreground': '#c5d2ca',
+          'editorIndentGuide.background1': '#edf1ee',
+          'editorIndentGuide.activeBackground1': '#a5c6b4',
+
+          'editorBracketMatch.background': colors.accentSoft,
+          'editorBracketMatch.border': '#a5c6b4',
+          'editorLink.activeForeground': colors.event,
+          'editorError.foreground': colors.error,
+
+          'editorWidget.background': colors.paperMuted,
+          'editorWidget.foreground': colors.ink,
+          'editorWidget.border': colors.border,
+          'editorHoverWidget.background': colors.paper,
+          'editorHoverWidget.foreground': colors.ink,
+          'editorHoverWidget.border': colors.border,
+
+          'input.background': colors.paper,
+          'input.foreground': colors.ink,
+          'input.border': colors.border,
+          'input.placeholderForeground': colors.muted,
+          'inputOption.activeBackground': colors.accentSoft,
+          'inputOption.activeForeground': colors.accentStrong,
+          'inputOption.activeBorder': '#a5c6b4',
+
+          'list.activeSelectionBackground': colors.accentSoft,
+          'list.activeSelectionForeground': colors.accentStrong,
+          'list.focusBackground': colors.accentSoft,
+          'list.focusForeground': colors.accentStrong,
+          'list.hoverBackground': colors.paperMuted,
+          'list.hoverForeground': colors.ink,
+
+          'menu.background': colors.paper,
+          'menu.foreground': colors.ink,
+          'menu.border': colors.border,
+          'menu.selectionBackground': colors.accentSoft,
+          'menu.selectionForeground': colors.accentStrong,
+          'menu.separatorBackground': colors.border,
+
+          'scrollbarSlider.background': '#bccbc280',
+          'scrollbarSlider.hoverBackground': '#a5b9adc0',
+          'scrollbarSlider.activeBackground': '#86ad96',
+          'scrollbar.shadow': '#00000000',
+
+          'focusBorder': '#86ad96',
+          'widget.shadow': '#223e2f18'
+        }
+      });
+    },
+
+    createEditorAdapter(editor, host, monaco) {
+      const model = editor.getModel();
+      return {
+        style: host.style,
+        get value() {
+          return model.getValue();
+        },
+        set value(value) {
+          editor.setValue(String(value ?? ''));
+        },
+        get selectionStart() {
+          return model.getOffsetAt(editor.getSelection().getStartPosition());
+        },
+        get selectionEnd() {
+          return model.getOffsetAt(editor.getSelection().getEndPosition());
+        },
+        focus() {
+          editor.focus();
+        },
+        setSelectionRange(start, end) {
+          const a = model.getPositionAt(start);
+          const b = model.getPositionAt(end);
+          editor.setSelection(
+            new monaco.Selection(a.lineNumber, a.column, b.lineNumber, b.column)
+          );
+          editor.revealPositionInCenterIfOutsideViewport(b);
+        },
+        setRangeText(text, start, end, mode = 'preserve') {
+          const a = model.getPositionAt(start);
+          const b = model.getPositionAt(end);
+          editor.pushUndoStop();
+          editor.executeEdits('journote.replace', [{
+            range: new monaco.Range(
+              a.lineNumber, a.column, b.lineNumber, b.column
+            ),
+            text,
+            forceMoveMarkers: true
+          }]);
+
+          if (mode === 'end') {
+            this.setSelectionRange(start + text.length, start + text.length);
+          } else if (mode === 'select') {
+            this.setSelectionRange(start, start + text.length);
+          }
+          // Without an explicit cursor state Monaco tracks existing selections.
+          editor.pushUndoStop();
+        }
+      };
+    },
+
+    attachAutocomplete(editor, monaco) {
+
+      editor.updateOptions({
+        suggestOnTriggerCharacters: true,
+        quickSuggestions: {
+          other: true,
+          comments: true,
+          strings: true
+        },
+        quickSuggestionsDelay: 100,
+        wordBasedSuggestions: 'off',
+        acceptSuggestionOnEnter: 'on',
+        acceptSuggestionOnCommitCharacter: false,
+        tabCompletion: 'off',
+        snippetSuggestions: 'none',
+        suggest: {
+          insertMode: 'replace',
+          showWords: false,
+          showSnippets: false,
+          preview: false,
+          selectionMode: 'always'
+        }
+      });
+
+      const categories = {
+        '#': {
+          label: 'Progetto',
+          kind: monaco.languages.CompletionItemKind.Folder
+        },
+        '@': {
+          label: 'Persona',
+          kind: monaco.languages.CompletionItemKind.User
+        },
+        '>': {
+          label: 'Evento',
+          kind: monaco.languages.CompletionItemKind.Event
+        },
+        '+': {
+          label: 'Tag generico',
+          kind: monaco.languages.CompletionItemKind.Keyword
+        }
+      };
+
+      const provider = monaco.languages.registerCompletionItemProvider(
+        'markdown',
+        {
+          triggerCharacters: ['#', '@', '>', '+'],
+
+          provideCompletionItems(textModel, position, context, cancellation) {
+            // Restrict this provider to this Journote editor.
+            if (
+              cancellation.isCancellationRequested ||
+              textModel !== editor.getModel()
+            ) {
+              return {suggestions: []};
+            }
+
+            const line = textModel.getLineContent(position.lineNumber);
+            const beforeCursor = line.slice(0, position.column - 1);
+
+            // Match only a tag at the start of a line or after whitespace.
+            // Markdown headings ("# Title"), quotes ("> text"), lists ("+ item"),
+            // email addresses and property references do not match.
+            const match = beforeCursor.match(
+              /(?:^|\s)([#@+>][A-Za-z0-9_.-]*)$/
+            );
+
+            if (!match) return {suggestions: []};
+
+            const typedTag = match[1];
+            const prefix = typedTag[0];
+            const query = typedTag.toLowerCase();
+            const category = categories[prefix];
+
+            // Replace the complete tag even when the cursor is in its middle.
+            // Leave surrounding punctuation, whitespace and [property] intact.
+            const suffix = line
+              .slice(position.column - 1)
+              .match(/^[A-Za-z0-9_.-]*/)[0];
+
+            const range = new monaco.Range(
+              position.lineNumber,
+              position.column - typedTag.length,
+              position.lineNumber,
+              position.column + suffix.length
+            );
+
+            // Read the current application model on every request.
+            // Metadata refreshes therefore become available automatically.
+            const tags = model.get('tags') || [];
+            const seen = new Set();
+            const suggestions = [];
+
+            for (const tag of tags) {
+              const name = tag?.name;
+
+              if (
+                typeof name !== 'string' ||
+                name[0] !== prefix ||
+                !/^[#@+>][A-Za-z0-9_.-]+$/.test(name) ||
+                !name.toLowerCase().startsWith(query) ||
+                seen.has(name)
+              ) {
+                continue;
+              }
+
+              seen.add(name);
+
+              const details = [category.label];
+              if (tag.parent) details.push(`Parent: ${tag.parent}`);
+
+              suggestions.push({
+                label: {
+                  label: name,
+                  description: category.label
+                },
+                kind: category.kind,
+                detail: details.join(' · '),
+                filterText: name,
+                sortText: name.toLowerCase(),
+                insertText: name,
+                range
+              });
+            }
+
+            return {
+              suggestions,
+              incomplete: true
+            };
+          }
+        }
+      );
+
+      // Remove the provider when navigating away or recreating the editor.
+      const disposeListener = editor.onDidDispose(() => {
+        provider.dispose();
+        disposeListener.dispose();
+      });
+    },
+
+    dispose() {
+      this.generation = (this.generation || 0) + 1;
+      this.saving = false;
+      this.monacoEditor?.dispose();
+      this.monacoModel?.dispose();
+      this.monacoEditor = null;
+      this.monacoModel = null;
     },
 
     toggleMaximize() {
-      const field = this.editorField;
-      if (!field) return;
-      const maximized = field.classList.toggle('editor-maximized');
-      const btn = eid('EditorMaximizeBtn');
-      if (btn) btn.textContent = maximized ? 'Minimize' : 'Maximize';
-      this.resizeEditor();
-      if (this.monacoEditor) this.monacoEditor.layout();
-      if (maximized) this.ed.focus();
-    },
+      const wrap = eid('EditorWrap');
+      if (!wrap) return;
 
-    resizeEditor() {
-      if (this.editorField?.classList.contains('editor-maximized')) {
-        if (this.monacoEditor) {
-          const host = this.monacoEditor.getContainerDomNode();
-          const height = Math.max(
-            window.innerHeight - 220,
-            300
-          );
-          if (host.style.height !== `${height}px`) {
-            host.style.height = `${height}px`;
-          }
-          this.monacoEditor.layout();
-          return;
-        }
-        this.ed.style.height =
-          `${Math.max(window.innerHeight - 220, 300)}px`;
-        return;
+      const maximized = wrap.classList.toggle('editor-maximized');
+
+      eid('ColumnsWrap')?.classList.toggle(
+        'editor-maximized',
+        maximized
+      );
+
+      const btn = eid('EditorMaximizeBtn');
+      if (btn) {
+        const label = maximized ? 'Minimize' : 'Maximize';
+        btn.textContent = label;
+        btn.title = `${label} editor`;
+        btn.setAttribute('aria-label', `${label} editor`);
       }
-      if (this.monacoEditor) {
-        const host = this.monacoEditor.getContainerDomNode();
-        const height = Math.min(
-          Math.max(this.monacoEditor.getContentHeight(), 120),
-          300
-        );
-        if (host.style.height !== `${height}px`) {
-          host.style.height = `${height}px`;
+
+      requestAnimationFrame(() => {
+        this.monacoEditor?.layout();
+
+        if (maximized) {
+          if (this.monacoEditor) this.monacoEditor.focus();
+          else this.ed?.focus();
         }
-        this.monacoEditor.layout();
-        return;
-      }
-      this.ed.style.height = 'auto';
-      this.ed.style.height =
-        `${Math.min(Math.max(this.ed.scrollHeight, 120), 300)}px`;
+      });
     },
 
     updateImageUploadState() {
@@ -1257,28 +1412,38 @@ const view = {
     },
 
     clear() {
+      if (this.pendingImageUploads) return false;
       this.ed.value = '';
-      this.resizeEditor();
       this.status.textContent = '';
       this.status.dataset.state = '';
       this.currentNote = null;
       eid('EditorSaveBtn').style.display = 'block';
       eid('EditorUpdateBtn').style.display = 'none';
       eid('EditorClearBtn').style.display = 'none';
+      return true;
     },
 
-    startReply(note) {
-      this.clear();
+    startPropertyEdit(tagName, key, value) {
+      if (!this.clear()) return;
+      // The `#tag[key] value` syntax is detected by businessLogic.saveNote
+      // and saved as a tag property instead of a note.
+      this.ed.value = `${tagName}[${key}]\n${value ?? ''}`;
+      this.ed.focus();
+      this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
+    },
+
+    async startReply(note) {
+      await page.home.ensureHome();
+      if (!this.clear()) return;
       this.ed.value = `<R:${note.id} `;
-      this.resizeEditor();
       this.ed.focus();
       this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
     },
 
     renderEditNote(note) {
+      if (this.pendingImageUploads) return;
       this.currentNote = note;
       this.ed.value = note.text;
-      this.resizeEditor();
       this.ed.focus();
       eid('EditorSaveBtn').style.display = 'none';
       eid('EditorUpdateBtn').style.display = 'block';
@@ -1287,7 +1452,9 @@ const view = {
     },
 
     async saveNote() {
-      if (this.saving || !this.ed.value.trim()) return;
+      if (this.saving || this.pendingImageUploads || !this.ed.value.trim()) return;
+      const generation = this.generation;
+      const current = this.currentNote;
       this.saving = true;
       const raw = this.ed.value;
       const newTags = businessLogic.getNewTags(raw);
@@ -1299,10 +1466,11 @@ const view = {
           this.parseLeadingDate(raw)
         );
         saved = true;
+        if (this.generation !== generation) return;
         const isProperty = response.kind === 'tag_property';
 
         if (isProperty) {
-          if (this.ed.value === raw) this.ed.value = '';
+          if (this.currentNote === current && this.ed.value === raw) this.ed.value = '';
           this.status.textContent =
             `Proprietà salvata per ${response.tag}.`;
         } else {
@@ -1312,7 +1480,7 @@ const view = {
             if (/^[#@>+]/.test(word)) leadingTags.push(word);
             else break;
           }
-          if (this.ed.value === raw) {
+          if (this.currentNote === current && this.ed.value === raw) {
             this.ed.value = leadingTags.length
               ? `${leadingTags.join(' ')} `
               : '';
@@ -1329,134 +1497,91 @@ const view = {
         await page.home.refreshMetadata();
         await view.ActionRequiredBox.render();
       } catch (error) {
+        if (this.generation !== generation) return;
         this.status.textContent = saved
           ? `Salvato, ma aggiornamento della vista fallito: ${error.message}`
           : `Salvataggio non riuscito: ${error.message}`;
         this.status.dataset.state = 'error';
       } finally {
-        this.saving = false;
-        this.resizeEditor();
-        this.ed.focus();
+        if (this.generation === generation) {
+          this.saving = false;
+        }
       }
     },
 
     async editNote() {
+      if (this.saving || this.pendingImageUploads || !this.currentNote || !this.ed.value.trim()) return;
+      const generation = this.generation;
+      const current = this.currentNote;
       const raw = this.ed.value;
-      if (!raw) return;
-      const date = this.parseLeadingDate(raw);
-      const previousTags = [...this.currentNote.tags];
-      const previousDate = this.currentNote.date;
-      this.currentNote.text = raw;
-      this.currentNote.date = date || this.currentNote.date;
-
-      const note = await businessLogic.editNote(
-        this.currentNote,
-        previousTags,
-        previousDate
-      );
-      if (note) {
+      const previousTags = [...(current.tags || [])];
+      const previousDate = current.date;
+      this.saving = true;
+      let saved = false;
+      try {
+        const note = await businessLogic.editNote({
+          ...current, text: raw, date: this.parseLeadingDate(raw) || current.date
+        });
+        saved = true;
+        if (this.generation !== generation) return;
         view.Main.editedNote(note, previousTags, previousDate);
-        view.EditorWrap.clear();
+        if (this.currentNote === current && this.ed.value === raw) this.clear();
+        else if (this.currentNote === current) this.currentNote = note;
         await page.home.refreshMetadata();
+      } catch (error) {
+        if (this.generation !== generation) return;
+        this.status.textContent = saved
+          ? `Nota salvata, aggiornamento fallito: ${error.message}`
+          : `Salvataggio non riuscito: ${error.message}`;
+        this.status.dataset.state = 'error';
+      } finally {
+        if (this.generation === generation) this.saving = false;
       }
     },
 
     parseLeadingDate(text) {
       const m = text.trim().match(/^(\d{4}-\d{2}-\d{2})\b/);
       return m ? m[1] : null;
+    },
+    focus() {
+      if (this.monacoEditor) this.monacoEditor.focus();
+      else this.ed?.focus();
+    },
+    isFocused() {
+      if (this.monacoEditor) return this.monacoEditor.hasTextFocus();
+      return document.activeElement === this.ed;
     }
   },
 
   TopBar: {
     render() {
-      this.el = eid('TopBar');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'TopBar')) return;
 
       const navBtnsWrap = this.el.appendChild(
-        view.createEl('div', {className: 'navBtnsWrap'})
+        view.el('div', {className: 'navBtnsWrap'})
       );
 
-      const hamburger = navBtnsWrap.appendChild(
-        view.createEl('button', {
-          id: 'HamburgerBtn',
-          className: 'navBtn btn standard',
-          innerHTML:
-            '<i class="fa-xs fa-fw fa-solid fa-bars fa-middle"></i>',
+      const navigation = [
+        ['HamburgerBtn', 'bars', 'Menu', 'standard', () => model.set('leftBarVisible', !model.get('leftBarVisible'))],
+        ['HomeBtn', 'home', 'Home', 'secondary', () => { location.hash = '/home'; }],
+        ['calendarBtn', 'calendar', 'Calendario', 'secondary', () => { location.hash = '/calendar'; }],
+        ['explorerBtn', 'database', 'Explorer', 'secondary', () => { location.hash = '/explorer'; }]
+      ];
+      for (const [id, icon, label, variant, onclick] of navigation) {
+        navBtnsWrap.appendChild(view.el('button', {
+          type: 'button', id, className: `navBtn btn ${variant}`,
+          title: label, 'aria-label': label,
+          innerHTML: `<i class="fa-xs fa-fw fa-solid fa-${icon} fa-middle" aria-hidden="true"></i>`,
           style: {
-            top: '10px',
-            left: '10px',
-            zIndex: '1000',
-            fontSize: '20px',
-            height: '36px'
+            top: '10px', left: '10px', zIndex: '1000', fontSize: '20px', height: '36px',
+            display: id === 'HamburgerBtn' && !eid('LeftBar') ? 'none' : ''
           },
-          onclick: () => {
-            model.set('leftBarVisible', !model.get('leftBarVisible'));
-          }
-        })
-      );
-      if (!eid('LeftBar')) hamburger.style.display = 'none';
-
-      const home = navBtnsWrap.appendChild(
-        view.createEl('button', {
-          id: 'HomeBtn',
-          className: 'navBtn btn secondary',
-          innerHTML:
-            '<i class="fa-xs fa-fw fa-solid fa-home fa-middle"></i>',
-          style: {
-            top: '10px',
-            left: '10px',
-            zIndex: '1000',
-            fontSize: '20px',
-            height: '36px'
-          },
-          onclick: () => {
-            location.hash = '/home';
-          }
-        })
-      );
-
-      const calendar = navBtnsWrap.appendChild(
-        view.createEl('button', {
-          id: 'calendarBtn',
-          className: 'navBtn btn secondary',
-          innerHTML:
-            '<i class="fa-xs fa-fw fa-regular fa-calendar fa-middle"></i>',
-          style: {
-            top: '10px',
-            left: '10px',
-            zIndex: '1000',
-            fontSize: '20px',
-            height: '36px'
-          },
-          onclick: () => {
-            location.hash = '/calendar';
-          }
-        })
-      );
-
-      navBtnsWrap.appendChild(
-        view.createEl('button', {
-          id: 'explorerBtn',
-          className: 'navBtn btn secondary',
-          innerHTML:
-            '<i class="fa-xs fa-fw fa-solid fa-database fa-middle"></i>',
-          title: 'Explorer',
-          'aria-label': 'Explorer',
-          style: {
-            top: '10px',
-            left: '10px',
-            zIndex: '1000',
-            fontSize: '20px',
-            height: '36px'
-          },
-          onclick: () => {
-            location.hash = '/explorer';
-          }
-        })
-      );
+          onclick
+        }));
+      }
 
       this.tc = this.el.appendChild(
-        view.createEl('div', {
+        view.el('div', {
           id: 'TopBarContainer',
           className: 'scrollable-x'
         })
@@ -1464,36 +1589,30 @@ const view = {
     },
 
     addTab(tag, notes, label = tag) {
-      const elPill = document.createElement('div');
-      elPill.className = 'tabPill';
-      elPill.dataset.key = tag;
-      elPill.title = label;
-      elPill.onclick = () => page.home.activateTagview(tag);
-      this.tc.appendChild(elPill);
-
-      const elPillLabel = document.createElement('span');
-      elPillLabel.textContent = label;
-      elPill.appendChild(elPillLabel);
-
-      const elPillCloseBtn = document.createElement('span');
-      elPillCloseBtn.className = 'x';
-      elPillCloseBtn.textContent = '×';
-      elPillCloseBtn.onclick = ev => {
-        ev.stopPropagation();
-        page.home.removeTagview(tag);
-      };
-      elPill.appendChild(elPillCloseBtn);
+      const elPill = this.tc.appendChild(view.el('div', {
+        className: 'tabPill',
+        title: label,
+        dataset: {key: tag},
+        onclick: () => page.home.activateTagview(tag)
+      }));
+      const elPillLabel = elPill.appendChild(view.el('span', {
+        textContent: label
+      }));
+      const elPillCloseBtn = elPill.appendChild(view.el('span', {
+        className: 'x',
+        textContent: '×',
+        onclick: ev => {
+          ev.stopPropagation();
+          page.home.removeTagview(tag);
+        }
+      }));
       elPill.scrollIntoView({behavior: 'smooth', inline: 'start'});
     },
 
     activateTab(tag) {
       console.log('[fn] TopBar.activate', tag);
-      for (const el of document.querySelectorAll('.tabPill')) {
-        el.classList.remove('active');
-      }
-      const pill = document.querySelector(
-        `.tabPill[data-key="${tag}"]`
-      );
+      for (const el of document.querySelectorAll('.tabPill')) {el.classList.remove('active');}
+      const pill = document.querySelector(`.tabPill[data-key="${CSS.escape(String(tag))}"]`);
       if (pill) {
         pill.scrollIntoView({
           behavior: 'smooth',
@@ -1506,162 +1625,219 @@ const view = {
 
     removeTab(tag) {
       console.log('[fn] removeTagview', tag);
-      const pill = this.tc.querySelector(`.tabPill[data-key="${tag}"]`);
+      const pill = this.tc.querySelector(`.tabPill[data-key="${CSS.escape(String(tag))}"]`);
       if (pill) pill.remove();
     }
   },
 
   Main: {
     render() {
-      this.el = eid('Main');
-      this.el.innerHTML = '';
-      this.el_tb = this.el.appendChild(
-        view.createEl('div', {id: 'TopBar'})
-      );
-      this.el_cw = this.el.appendChild(
-        view.createEl('div', {
-          id: 'ColumnsWrap',
-          className: 'columns scrollable-x'
-        })
-      );
-      this.el_ew = this.el.appendChild(
-        view.createEl('div', {id: 'EditorWrap'})
-      );
+      if (!view.mount(this, 'Main')) return;
+      this.el_tb = this.el.appendChild(view.el('div', {id: 'TopBar'}));
+      this.el_cw = this.el.appendChild(view.el('div', {id: 'ColumnsWrap', className: 'columns scrollable-x'}));
+      this.el_ew = this.el.appendChild(view.el('div', {id: 'EditorWrap'}));
       view.TopBar.render();
       view.EditorWrap.render();
     },
 
-    addTab(tag, notes, label = tag) {
+    addTab(tag, notes, events, label = tag) {
       const tagObj = (model.get('tags') || []).find(t => t.name === tag);
-      const elColumn = this.el_cw.appendChild(
-        document.createElement('div')
+      const elColumn = this.el_cw.appendChild(view.el('div', {className: 'column fullwidth', dataset: {key: tag}}));
+      const elColumnResizer = elColumn.appendChild(view.el('div', {className: 'ColumnResizer'}));
+      view.Main.makeResizable(elColumn, elColumnResizer);
+      const elColCont = elColumn.appendChild(view.el('div', {className: 'column-content', dataset: {key: tag}}));
+      
+      /* ColHeader */
+      const elColHeader = elColCont.appendChild(view.el('div', {
+        className: 'columnHeader',
+        textContent: label,
+        onclick: ev => {ev.stopPropagation(); page.home.activateTagview(tag);}
+      }));
+      const elColHeaderBtnWrap = elColHeader.appendChild(view.el('div', {className: 'columnHeaderBtns'}));
+      elColHeaderBtnWrap.appendChild(view.el('button', {
+        className: 'btnp primary',
+        title: 'Show sub header',
+        innerHTML: '<i class="fa fa-eye fa-fw fa-solid fa-xs"> </i>',
+        onclick: ev => {ev.stopPropagation(); elColumn.classList.toggle('showSubHeader');}
+      }));
+      elColHeaderBtnWrap.appendChild(view.el('button', {
+        className: 'btnp primary fullWidthBtn',
+        title: 'Full width',
+        innerHTML: '<i class="fa fa-arrows-left-right-to-line fa-fw fa-solid fa-xs"> </i>',
+        onclick: ev => {ev.stopPropagation(); elColumn.classList.toggle('fullwidth');}
+      }));
+      elColHeaderBtnWrap.appendChild(view.el('button', {
+        innerHTML: '<i class="fa fa-x fa-fw fa-solid fa-xs"> </i>',
+        title: 'Close tab',
+        className: 'btnp primary',
+        onclick: ev => {ev.stopPropagation();page.home.removeTagview(tag);}
+      }));
+
+      /* ColSubHeader */
+      const elColSubheader = elColCont.appendChild(view.el('div', {className: 'columnSubHeader'}));
+      this.renderTagDetails(elColSubheader, tag, tagObj);
+
+      /* NotesList */
+      const elNoteList = elColCont.appendChild(view.el('div', {className: 'notesList scrollable'}));
+      const dayNumber = date => (
+        /^\d{4}-\d{2}-\d{2}$/.test(date || '')
+          ? Date.parse(`${date}T00:00:00Z`) / 86400000
+          : NaN
       );
-      elColumn.className = 'column';
-      elColumn.dataset.key = tag;
-      elColumn.style.position = 'relative';
-      elColumn.style.flex = '0 0 420px';
+      const allItems = notes
+        .concat(events)
+        .concat([{date: helper.localDate(), today: true}])
+        .sort((a,b) => {
+          const aDate = dayNumber(a.date);
+          const bDate = dayNumber(b.date);
+          if (Number.isFinite(aDate) && Number.isFinite(bDate)) {
+            return aDate - bDate;
+          }
+          return 0;
+        });
+      allItems.forEach((note, index) => {    
+        console.log(note, index);
+        if (index > 0) {
+          const days = Math.abs(dayNumber(note.date) - dayNumber(allItems[index - 1].date));
+          if (Number.isFinite(days) && days > 0) {
+            const weeks = Math.floor(days / 7);
+            const remainingDays = days % 7;
+            for (let i = 0; i < weeks + remainingDays; i++) {
+              elNoteList.appendChild(view.el('div', {
+                className: i < weeks
+                  ? 'notesDateGap-line notesDateGap-week'
+                  : 'notesDateGap-line',
+                'aria-hidden': 'true'
+              }));
+            }
+          }
+        }
+        if(note.today) {
+          elNoteList.appendChild(this.genTodayItem(note, tag));
+        } else if(note.category && note.category !== '') {
+          elNoteList.appendChild(this.genEventItem(note, tag));
+        } else {
+          elNoteList.appendChild(this.genNoteItem(note, tag));
+        }
+      });
 
-      const resizeHandle = document.createElement('div');
-      resizeHandle.className = 'ColumnResizer';
-      resizeHandle.style.width = '5px';
-      resizeHandle.style.cursor = 'col-resize';
-      resizeHandle.style.position = 'absolute';
-      resizeHandle.style.top = '0';
-      resizeHandle.style.right = '0';
-      resizeHandle.style.bottom = '0';
-      resizeHandle.style.zIndex = '10';
-      elColumn.appendChild(resizeHandle);
-      view.Main.makeResizable(elColumn, resizeHandle);
+      setTimeout(() => {
+        elNoteList.scrollTop = elNoteList.scrollHeight;
+      }, 0);
+      
+      /* activate column */
+      page.home.activateTagview(tag);
+    },
 
-      const elColCont = elColumn.appendChild(
-        document.createElement('div')
-      );
-      elColCont.className = 'column-content';
-      elColCont.dataset.key = tag;
+    genEventItem(event, tag) {
+      const elNoteItem = view.el('div', {
+        className: `noteItem eventItem`,
+        dataset: {id: event.name, date: event.date}
+      });
+      const elNoteDate = elNoteItem.appendChild(view.el('div', {
+          className: 'noteDate flex-col',
+          innerHTML:
+            new Date(`${event.date}T12:00:00`)
+              .toLocaleString('default', {month: 'short'}) +
+            '-' + event.date.substring(8, 10)
+      }));
+      
+      const elNoteText = elNoteItem
+        .appendChild(view.el('div', {className: 'noteTextWrap'}))
+        .appendChild(view.el('div', {className: 'noteText'}))
+        .appendChild(view.el('p', {textContent: event.name}));
 
-      const header = elColCont.appendChild(
-        document.createElement('div')
-      );
-      header.className = 'columnHeader';
-      header.textContent = label;
+      return elNoteItem;
+    },
 
-      const subheader = elColCont.appendChild(
-        document.createElement('div')
-      );
-      subheader.className = 'columnSubHeader';
+    genTodayItem(event, tag) {
+      console.log(event);
+      const elNoteItem = view.el('div', {
+        className: `noteItem todayItem`,
+        dataset: {id: 'today', date: event.date}
+      });
+      const elNoteDate = elNoteItem.appendChild(view.el('div', {
+          className: 'noteDate flex-col',
+          innerHTML:
+            new Date(`${event.date}T12:00:00`)
+              .toLocaleString('default', {month: 'short'}) +
+            '-' + event.date.substring(8, 10)
+      }));
+      
+      const elNoteText = elNoteItem
+        .appendChild(view.el('div', {className: 'noteTextWrap'}))
+        .appendChild(view.el('div', {className: 'noteText'}))
+        .appendChild(view.el('i', {textContent: 'Oggi'}));
 
+      return elNoteItem;
+    },
+    renderTagDetails(elColSubheader, tag, tagObj) {
+      elColSubheader.replaceChildren();
       if (tagObj == undefined) {
         const tagType = helper.getClassfromTag(tag);
         if (tagType == 'Journal') {
-          subheader.innerHTML = new Date(tag).toLocaleDateString(
-            'it-IT',
-            {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
-            }
-          );
+          elColSubheader.innerHTML = new Date(`${tag}T12:00:00`).toLocaleDateString('it-IT', {weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
         } else if (tagType == 'FullText') {
-          subheader.innerHTML = '';
+          elColSubheader.innerHTML = '';
         } else {
-          console.error('tagObj is undefined');
+          console.error('tagObj is undefined and tagType not recognized', tag, tagType);
         }
       } else {
-        const conv = new showdown.Converter({
-          metadata: true,
-          sanitize: true
-        });
-        const content = conv.makeHtml(tagObj.content || '');
-        subheader.innerHTML = content;
-        sanitizeRenderedMarkdown(subheader);
-      }
-      subheader.style.display = 'block';
+        const conv = new showdown.Converter({metadata: true});
+        elColSubheader.innerHTML = conv.makeHtml(escapeHTML(tagObj.content || ''));
+        sanitizeRenderedMarkdown(elColSubheader);
 
-      const btnWrap = header.appendChild(
-        document.createElement('div')
-      );
-      btnWrap.style.float = 'right';
-      btnWrap.style.display = 'flex';
-      btnWrap.style.gap = '8px';
-
-      const contentBtn = btnWrap.appendChild(
-        document.createElement('button')
-      );
-      contentBtn.innerHTML =
-        '<i class="fa fa-eye fa-fw fa-solid fa-xs"> </i>';
-      contentBtn.title = 'Show content';
-      contentBtn.className = 'btnp primary';
-      contentBtn.onclick = ev => {
-        ev.stopPropagation();
-        if (subheader.style.display === 'none') {
-          subheader.style.display = 'block';
-        } else {
-          subheader.style.display = 'none';
+        const properties = Array.isArray(tagObj.properties)
+          ? tagObj.properties
+          : [];
+        if (properties.length) {
+          const elColProperties = elColSubheader.appendChild(
+            view.el('div', {className: 'columnTagProperties'})
+          );
+          for (const property of properties) {
+            const elProperty = elColProperties.appendChild(
+              view.el('div', {className: 'columnTagProperty'})
+            );
+            const elPropertyBody = elProperty.appendChild(
+              view.el('div', {className: 'columnTagPropertyBody'})
+            );
+            elPropertyBody.appendChild(view.el('div', {
+              className: 'columnTagPropertyKey',
+              textContent: property.key
+            }));
+            const elPropertyValue = elPropertyBody.appendChild(
+              view.el('div', {className: 'columnTagPropertyValue'})
+            );
+            elPropertyValue.innerHTML = conv.makeHtml(
+              escapeHTML(property.value ?? '')
+            );
+            sanitizeRenderedMarkdown(elPropertyValue);
+            elProperty.appendChild(view.el('button', {
+              className: 'btn muted small transparent columnTagPropertyEditBtn',
+              innerHTML: '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
+              title: `Edit property ${property.key}`,
+              'aria-label': `Edit property ${property.key}`,
+              onclick: ev => {
+                ev.stopPropagation();
+                view.EditorWrap.startPropertyEdit(
+                  tagObj.name,
+                  property.key,
+                  property.value
+                );
+              }
+            }));
+          }
         }
-      };
-
-      const maxBtn = btnWrap.appendChild(
-        document.createElement('button')
-      );
-      maxBtn.innerHTML =
-        '<i class="fa fa-expand fa-fw fa-solid fa-xs"> </i>';
-      maxBtn.title = 'Maximize column';
-      maxBtn.className = 'btnp primary';
-      maxBtn.onclick = ev => {
-        ev.stopPropagation();
-        this.maximizeTab(tag);
-      };
-
-      const closeBtn = btnWrap.appendChild(
-        document.createElement('button')
-      );
-      closeBtn.innerHTML =
-        '<i class="fa fa-x fa-fw fa-solid fa-xs"> </i>';
-      closeBtn.title = 'Close tab';
-      closeBtn.className = 'btnp primary';
-      closeBtn.onclick = ev => {
-        ev.stopPropagation();
-        page.home.removeTagview(tag);
-      };
-
-      const elNoteList = elColCont.appendChild(
-        document.createElement('div')
-      );
-      elNoteList.className = 'notesList scrollable';
-
-      if (notes.length === 0) {
-        this.showEmptyState(elNoteList, tag);
-      } else {
-        notes.forEach(n => {
-          elNoteList.appendChild(this.genNoteItem(n, tag));
-        });
-        setTimeout(() => {
-          console.log('Scrolling note list to bottom', tag);
-          elNoteList.scrollTop = elNoteList.scrollHeight;
-        }, 0);
       }
-      page.home.activateTagview(tag);
+
+    },
+
+    refreshTagDetails() {
+      if (!eid('Main')) return;
+      const tags = new Map((model.get('tags') || []).map(tag => [tag.name, tag]));
+      for (const column of this.el_cw.querySelectorAll('.column')) {
+        this.renderTagDetails(column.querySelector('.columnSubHeader'), column.dataset.key, tags.get(column.dataset.key));
+      }
     },
 
     activateTab(tag) {
@@ -1669,9 +1845,7 @@ const view = {
       for (const el of this.el_cw.querySelectorAll('.column')) {
         el.classList.remove('active');
       }
-      const col = this.el_cw.querySelector(
-        `.column[data-key="${tag}"]`
-      );
+      const col = this.el_cw.querySelector(`.column[data-key="${CSS.escape(String(tag))}"]`);
       if (col) {
         col.scrollIntoView({behavior: 'smooth', inline: 'start'});
         col.classList.add('active');
@@ -1680,49 +1854,34 @@ const view = {
 
     removeTab(tag) {
       const elColToRemove = this.el_cw.querySelector(
-        `.column[data-key="${tag}"]`
+        `.column[data-key="${CSS.escape(String(tag))}"]`
       );
       if (elColToRemove) elColToRemove.remove();
     },
 
-    pushNote(note) {
-      console.log('[fn] pushNote', note);
-      for (const tag of note.tags) {
-        if (model.get('tagsVisible').includes(tag)) {
-          const noteList = document.querySelector(
-            `.column[data-key="${tag}"] .notesList`
-          );
-          if (noteList) {
-            const elNotePushed = noteList.appendChild(
-              this.genNoteItem(note, tag)
-            );
-            elNotePushed.scrollIntoView({
-              behavior: 'smooth',
-              inline: 'start'
-            });
-          }
-        }
+    resetFullWidth() {
+      for (const col of this.el_cw.querySelectorAll(
+        '.column.fullwidth'
+      )) {
+        col.classList.remove('fullwidth');
       }
+    },
 
-      if (model.get('tagsVisible').includes(note.date)) {
-        const noteList = document.querySelector(
-          `.column[data-key="${note.date}"] .notesList`
-        );
-        if (noteList) {
-          const elNotePushed = noteList.appendChild(
-            this.genNoteItem(note, note.date)
-          );
-          elNotePushed.scrollIntoView({
-            behavior: 'smooth',
-            inline: 'start'
-          });
-        }
+    pushNote(note) {
+      for (const tag of new Set([...(note.tags || []), note.date])) {
+        if (!model.get('tagsVisible').includes(tag)) continue;
+        const list = this.el_cw?.querySelector(`.column[data-key="${CSS.escape(tag)}"] .notesList`);
+        if (!list) continue;
+        list.querySelector('.empty-state')?.remove();
+        const item = this.genNoteItem(note, tag);
+        list.appendChild(item);
+        item.scrollIntoView({behavior: 'smooth', block: 'nearest', inline: 'nearest'});
       }
     },
 
     updateTab(tag, notes) {
-      const column = this.el_cw.querySelector(
-        `.column[data-key="${tag}"]`
+      const column = this.el_cw?.querySelector(
+        `.column[data-key="${CSS.escape(String(tag))}"]`
       );
       const noteList = column?.querySelector('.notesList');
       if (!noteList) return;
@@ -1736,8 +1895,9 @@ const view = {
     },
 
     showEmptyState(noteList, tag) {
-      const message = document.createElement('p');
-      message.className = 'empty-state';
+      const message = view.el('p', {
+        className: 'empty-state'
+      });
       if (tag.startsWith('filter-')) {
         message.textContent = 'Nessuna nota corrisponde a questa regola.';
       } else if (helper.getClassfromTag(tag) === 'Journal') {
@@ -1748,24 +1908,15 @@ const view = {
       noteList.replaceChildren(message);
     },
 
-    maximizeTab(key) {
-      console.log('[fn] maximizeTab', key);
-      const col = this.el_cw.querySelector(
-        `.column[data-key="${key}"]`
-      );
-      if (!col) return;
-      col.classList.toggle('maximized');
-    },
-
-    genNoteItem(n, currentTag, relatedRole = null) {
+    genNoteItem(n, currentTag, relatedRole = null, {editable = true} = {}) {
       let taskClass = '';
       if (n.task != null && n.task != '') {
         taskClass = 'task-' + n.task;
       }
 
-      const elNoteItem = view.createEl('div', {
+      const elNoteItem = view.el('div', {
         className: `noteItem ${taskClass}`,
-        dataset: {id: n.id}
+        dataset: {id: n.id, date: n.date}
       });
       if (relatedRole) {
         elNoteItem.classList.add(
@@ -1777,63 +1928,54 @@ const view = {
       }
 
       const elNoteDate = elNoteItem.appendChild(
-        view.createEl('div', {
+        view.el('div', {
           className: 'noteDate flex-col',
           innerHTML:
-            new Date(n.date).toLocaleString('default', {month: 'short'}) +
+            new Date(`${n.date}T12:00:00`).toLocaleString('default', {month: 'short'}) +
             '-' + n.date.substring(8, 10) +
             (
               n.duedate
-                ? '<br><span class="color-purple-4">' +
-                  new Date(n.duedate).toLocaleString(
-                    'default', {month: 'short'}
-                  ) +
-                  '-' + n.duedate.substring(8, 10) + '</span>'
+                ? '<br><span class="color--c-error">' +
+                  new Date(`${n.duedate}T12:00:00`).toLocaleString('default', {month: 'short'}) +
+                  '-' +
+                  n.duedate.substring(8, 10) + '</span>'
                 : ''
             )
         })
       );
 
       {
-        const elReplyIndicators = elNoteItem.appendChild(
-          view.createEl('div', {
-            className: 'noteReplyIndicators flex-col',
-            style:
-              'display:flex; flex-direction:row; align-items:center; justify-content:flex-start; gap:1px; padding-left:2px;'
-          })
-        );
+        const elReplyIndicators = elNoteItem.appendChild(view.el('div', {className: 'noteReplyIndicators flex-col'}));
 
         if (!elNoteItem.classList.contains('noteItem-related-child')) {
-          elReplyIndicators.appendChild(
-            view.createEl('button', {
-              className: n.replied_to
-                ? 'btn primary small'
-                : 'btn transparent muted small',
-              innerHTML:
-                '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
-              title: n.replied_to
-                ? 'Risponde a un\'altra nota'
-                : 'Nessuna nota a cui risponde',
-              'aria-label': n.replied_to
-                ? 'Risponde a un\'altra nota'
-                : 'Nessuna nota a cui risponde',
-              tabindex: n.replied_to ? 0 : -1,
-              onclick: () => {
-                if (n.replied_to) {
-                  view.Main.openRelatedNote(
-                    n.replied_to,
-                    'above',
-                    elNoteItem
-                  );
-                }
+          elReplyIndicators.appendChild(view.el('button', {
+            className: n.replied_to
+              ? 'btn primary small'
+              : 'btn transparent muted small',
+            innerHTML:
+              '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
+            title: n.replied_to
+              ? 'Risponde a un\'altra nota'
+              : 'Nessuna nota a cui risponde',
+            'aria-label': n.replied_to
+              ? 'Risponde a un\'altra nota'
+              : 'Nessuna nota a cui risponde',
+            tabindex: n.replied_to ? 0 : -1,
+            onclick: () => {
+              if (n.replied_to) {
+                view.Main.openRelatedNote(
+                  n.replied_to,
+                  'above',
+                  elNoteItem
+                );
               }
-            })
-          );
+            }
+          }));
         }
 
         if (!elNoteItem.classList.contains('noteItem-related-parent')) {
           elReplyIndicators.appendChild(
-            view.createEl('button', {
+            view.el('button', {
               className: n.reply
                 ? 'btn primary small'
                 : 'btn transparent muted small',
@@ -1859,13 +2001,13 @@ const view = {
       }
 
       const elNoteDays = elNoteItem.appendChild(
-        view.createEl('div', {
+        view.el('div', {
           className: 'noteDays flex-col',
           innerHTML:
             helper.diffToToday(new Date(n.date)) +
             (
               n.duedate
-                ? '<br><span class="color-purple-4">' +
+                ? '<br><span class="color--c-error">' +
                   helper.diffToToday(new Date(n.duedate)) +
                   '</span>'
                 : ''
@@ -1874,38 +2016,24 @@ const view = {
       );
 
       const elNoteText = elNoteItem
-        .appendChild(view.createEl('div', {
-          style: {
-            flex: '1',
-            display: 'flex',
-            flexDirection: 'column',
-            paddingLeft: '5px'
-          }
-        }))
+        .appendChild(view.el('div', {className: 'noteTextWrap'}))
         .appendChild(this.genNoteText(n, currentTag));
 
-      const elNoteBtnWrap = elNoteItem.appendChild(
-        view.createEl('div', {
-          style:
-            'display:flex; flex-direction:row; gap:2px; flex:0; padding-left:5px;'
-        })
-      );
-
-      elNoteBtnWrap.appendChild(
-        view.createEl('button', {
-          className: 'btn muted small transparent',
-          innerHTML:
-            '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
-          title: 'Edit note',
-          onclick: ev => {
-            ev.stopPropagation();
-            view.EditorWrap.renderEditNote(n);
-          }
-        })
-      );
+      if (!editable) return elNoteItem;
+      const elNoteBtnWrap = elNoteItem.appendChild(view.el('div', {className: 'noteBtnWrap'}));
+      const elNoteEditBtn = elNoteBtnWrap.appendChild(view.el('button', {
+        className: 'btn muted small transparent',
+        innerHTML:
+          '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
+        title: 'Edit note',
+        onclick: ev => {
+          ev.stopPropagation();
+          view.EditorWrap.renderEditNote(n);
+        }
+      }));
 
       const elNoteDelBtn = elNoteBtnWrap.appendChild(
-        view.createEl('button', {
+        view.el('button', {
           className: 'btn muted small transparent',
           innerHTML: '<i class="fa fa-x fa-solid fa-fw fa-2xs"></i>',
           title: 'Delete note',
@@ -1915,10 +2043,16 @@ const view = {
             const ok = await api.api(`/api/notes/${n.id}`, {
               method: 'DELETE'
             });
-            if (ok && ok.status === 'deleted') {
+            if (ok === null || ok?.status === 'deleted') {
               document.querySelectorAll(
-                `.noteItem[data-id="${n.id}"]`
-              ).forEach(item => item.remove());
+                `.noteItem[data-id="${CSS.escape(String(n.id))}"]`
+              ).forEach(item => {
+                const list = item.closest('.notesList');
+                item.remove();
+                if (list && !list.querySelector('.noteItem')) {
+                  this.showEmptyState(list, list.closest('.column')?.dataset.key || '');
+                }
+              });
               await page.home.refreshMetadata();
             }
           }
@@ -1929,41 +2063,45 @@ const view = {
     },
 
     genNoteText(n, currentTag) {
-      const elNoteText = document.createElement('div');
-      elNoteText.className = 'noteText';
-      let noteText = escapeHTML(n.text);
-      const noteKey = String(n.id).replace(/[^A-Za-z0-9]/g, '');
+      const elNoteText = view.el('div', {className: 'noteText'});
+      const converter = new showdown.Converter({metadata: true});
 
-      const labels = helper.extractTagsFromText(n.text, false).map(
-        (tag, index) => {
-          const token = `JOURNOTETAG${noteKey}X${index}END`;
-          if (tag.startsWith('#')) {
-            noteText = noteText.replace(
-              new RegExp(
-                tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-                'g'
-              ),
-              token
-            );
-            return {tag, token, displayTag: tag.substring(1)};
-          }
-          noteText = noteText.replace(
-            new RegExp(
-              tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
-              'g'
-            ),
-            token
-          );
-          return {tag, token};
-        }
+      // A tag at the start of a line ("#qwe", ">qwe", "+qwe") would be
+      // parsed by Markdown as a heading, blockquote or list. Escape the
+      // tag prefix so it is rendered as plain text instead.
+      const protectedText = n.text.replace(
+        /(^|\n)([#@>+][A-Za-z0-9_.-]+)/g,
+        (match, lineStart, tag) => `${lineStart}\\${tag}`
       );
+      let html = converter.makeHtml(escapeHTML(protectedText));
 
-      const converter = new showdown.Converter({
-        metadata: true,
-        sanitize: true
-      });
-      elNoteText.innerHTML = converter.makeHtml(noteText);
+      elNoteText.innerHTML = html;
       sanitizeRenderedMarkdown(elNoteText);
+      const walker = document.createTreeWalker(elNoteText, NodeFilter.SHOW_TEXT);
+      const textNodes = [];
+      while (walker.nextNode()) textNodes.push(walker.currentNode);
+      for (const node of textNodes) {
+        if (node.parentElement.closest('a, code, pre, button, script, style')) continue;
+        const pattern = /(^|\s)([#@>+][A-Za-z0-9_.-]+)/g;
+        const fragment = document.createDocumentFragment();
+        let last = 0;
+        for (const match of node.textContent.matchAll(pattern)) {
+          const offset = match.index + match[1].length;
+          const tag = match[2];
+          fragment.append(node.textContent.slice(last, offset));
+          fragment.append(view.el('button', {
+            type: 'button', className: `lbl lbl-${helper.getClassfromTag(tag)}`,
+            dataset: {tag}, title: `Apri ${tag}`,
+            textContent: tag === currentTag ? '●' : tag,
+            onclick: () => page.home.addTagview(tag)
+          }));
+          last = offset + tag.length;
+        }
+        if (last) {
+          fragment.append(node.textContent.slice(last));
+          node.replaceWith(fragment);
+        }
+      }
 
       elNoteText.querySelectorAll('img').forEach(image => {
         image.loading = 'lazy';
@@ -1987,56 +2125,6 @@ const view = {
         });
       });
 
-      if (labels.length) {
-        const labelByToken = new Map(
-          labels.map(label => [label.token, label])
-        );
-        const tokenPattern = new RegExp(
-          `(${labels.map(label => label.token).join('|')})`,
-          'g'
-        );
-        const walker = document.createTreeWalker(
-          elNoteText,
-          NodeFilter.SHOW_TEXT
-        );
-        const textNodes = [];
-        while (walker.nextNode()) textNodes.push(walker.currentNode);
-
-        for (const node of textNodes) {
-          const parts = node.nodeValue.split(tokenPattern);
-          if (parts.length === 1) continue;
-          const content = document.createDocumentFragment();
-
-          parts.forEach((part, index) => {
-            if (labelByToken.has(part)) {
-              const labelInfo = labelByToken.get(part);
-              const tag = labelInfo.tag;
-
-              if (node.parentElement?.closest('pre, code')) {
-                content.appendChild(document.createTextNode(tag));
-                return;
-              }
-
-              const label = document.createElement('button');
-              label.type = 'button';
-              label.className = `lbl lbl-${helper.getClassfromTag(tag)}`;
-              label.dataset.tag = tag;
-              label.textContent = tag === currentTag
-                ? '●'
-                : labelInfo.displayTag || tag;
-              label.title = `Apri ${tag}`;
-              label.addEventListener(
-                'click',
-                () => page.home.addTagview(tag)
-              );
-              content.appendChild(label);
-            } else if (part) {
-              content.appendChild(document.createTextNode(part));
-            }
-          });
-          node.replaceWith(content);
-        }
-      }
       return elNoteText;
     },
 
@@ -2055,7 +2143,8 @@ const view = {
         const elNoteItem = this.genNoteItem(
           note,
           noteList.closest('.column-content')?.dataset.key || note.date,
-          position === 'above' ? 'parent' : 'child'
+          position === 'above' ? 'parent' : 'child',
+          {editable: Boolean(eid('Main'))}
         );
         if (position === 'above') {
           anchorItem.before(elNoteItem);
@@ -2073,39 +2162,12 @@ const view = {
     },
 
     makeResizable(colEl, handle) {
-      let startX;
-      let startWidth;
+      view.resizeColumn(colEl, handle, 220, 600);
+    },
 
-      const onMouseDown = e => {
-        startX = e.clientX;
-        startWidth = colEl.offsetWidth;
-        document.documentElement.addEventListener(
-          'mousemove', onMouseMove
-        );
-        document.documentElement.addEventListener(
-          'mouseup', onMouseUp
-        );
-        e.preventDefault();
-      };
-
-      const onMouseMove = e => {
-        const newWidth = Math.min(
-          Math.max(startWidth + (e.clientX - startX), 220),
-          600
-        );
-        colEl.style.flex = `0 0 ${newWidth}px`;
-      };
-
-      const onMouseUp = () => {
-        document.documentElement.removeEventListener(
-          'mousemove', onMouseMove
-        );
-        document.documentElement.removeEventListener(
-          'mouseup', onMouseUp
-        );
-      };
-
-      handle.addEventListener('mousedown', onMouseDown);
+    toggleMaximizeTab(tag) {
+      const column = this.el_cw?.querySelector(`.column[data-key="${CSS.escape(tag)}"]`);
+      column?.classList.toggle('fullwidth');
     },
 
     editedNote(note, previousTags = [], previousDate = note.date) {
@@ -2124,15 +2186,16 @@ const view = {
         ) continue;
 
         const noteList = document.querySelector(
-          `.column[data-key="${key}"] .notesList`
+          `.column[data-key="${CSS.escape(String(key))}"] .notesList`
         );
         if (!noteList) continue;
 
         const existing = noteList.querySelector(
-          `.noteItem[data-id="${note.id}"]`
+          `.noteItem[data-id="${CSS.escape(String(note.id))}"]`
         );
         const belongs = note.tags.includes(key) || note.date === key;
         if (belongs) {
+          noteList.querySelector('.empty-state')?.remove();
           const updated = this.genNoteItem(note, key);
           existing
             ? existing.replaceWith(updated)
@@ -2140,14 +2203,14 @@ const view = {
         } else {
           existing?.remove();
         }
+        if (!noteList.querySelector('.noteItem')) this.showEmptyState(noteList, key);
       }
     }
   },
 
   LeftBar: {
     render() {
-      this.el = eid('LeftBar');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'LeftBar')) return;
 
       if (!model.get('leftBarVisible')) {
         this.el.style.display = 'none';
@@ -2160,24 +2223,25 @@ const view = {
         this.el.style.flex = localStorage.getItem('leftBarWidth');
       }
 
-      this.el.appendChild(view.createEl('div', {
+      this.el.appendChild(view.el('div', {
         id: 'JournalBox',
         className: 'box',
         style: 'flex:0'
       }));
-      this.el.appendChild(view.createEl('div', {
+      this.el.appendChild(view.el('div', {
         id: 'TagsBox',
         className: 'box',
         style: 'flex:1 1 auto; min-height:0; overflow-y:auto;'
       }));
-      this.el.appendChild(view.createEl('div', {
+      this.el.appendChild(view.el('div', {
         id: 'ActionRequiredBox',
         className: 'box',
         style: 'flex:0 0 auto; margin-top:auto;'
       }));
 
-      const handle = document.createElement('div');
-      handle.id = 'LeftBarResizer';
+      const handle = view.el('div', {
+        id: 'LeftBarResizer'
+      });
       handle.style.width = '5px';
       handle.style.cursor = 'col-resize';
       handle.style.position = 'absolute';
@@ -2189,59 +2253,28 @@ const view = {
       this.el.appendChild(handle);
       view.LeftBar.makeResizable(handle);
 
-      view.JournalBox.render();
+      view.run(() => view.JournalBox.render());
       view.TagsBox.render();
-      view.ActionRequiredBox.render();
+      view.run(() => view.ActionRequiredBox.render());
     },
 
     makeResizable(handle) {
-      let startX;
-      let startWidth;
-
-      const onMouseDown = e => {
-        startX = e.clientX;
-        startWidth = this.el.offsetWidth;
-        document.documentElement.addEventListener(
-          'mousemove', onMouseMove
-        );
-        document.documentElement.addEventListener(
-          'mouseup', onMouseUp
-        );
-        e.preventDefault();
-      };
-
-      const onMouseMove = e => {
-        const newWidth = Math.min(
-          Math.max(startWidth + (e.clientX - startX), 180),
-          500
-        );
-        this.el.style.flex = '0 0 ' + newWidth + 'px';
-      };
-
-      const onMouseUp = () => {
-        localStorage.setItem('leftBarWidth', this.el.style.flex);
-        document.documentElement.removeEventListener(
-          'mousemove', onMouseMove
-        );
-        document.documentElement.removeEventListener(
-          'mouseup', onMouseUp
-        );
-      };
-
-      handle.addEventListener('mousedown', onMouseDown);
+      const element = this.el;
+      view.resizeColumn(element, handle, 180, 500, () => {
+        localStorage.setItem('leftBarWidth', element.style.flex);
+      });
     }
   },
 
   TagsBox: {
     render() {
-      this.el = eid('TagsBox');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'TagsBox')) return;
 
-      this.el.appendChild(view.createEl('div', {
+      this.el.appendChild(view.el('div', {
         id: 'TagsBoxSubHeader',
         style: 'margin:10px 0px;'
       }));
-      this.el.appendChild(view.createEl('div', {
+      this.el.appendChild(view.el('div', {
         id: 'TagsBoxList',
         style:
           'display:block; width:100%; background:none; border:none; font-size:1.2em; z-index:2;',
@@ -2256,115 +2289,26 @@ const view = {
   TagsBoxSubHeader: {
     render() {
       console.log('[fn] TagsBoxSubHeader.render()');
-      this.el = eid('TagsBoxSubHeader');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'TagsBoxSubHeader')) return;
 
-      const elTagsTasks = document.createElement('button');
-      elTagsTasks.type = 'button';
-      elTagsTasks.id = 'tagsTasksToggle';
-      elTagsTasks.className =
-        `btnp primary${model.get('tagsBox_task') ? ' active' : ''}`;
-      elTagsTasks.textContent = '!';
-      elTagsTasks.title = 'Mostra/nascondi tag evento';
-      elTagsTasks.setAttribute('aria-label', elTagsTasks.title);
-      elTagsTasks.setAttribute(
-        'aria-pressed',
-        String(model.get('tagsBox_task'))
-      );
-      elTagsTasks.onclick = ev => {
-        ev.preventDefault();
-        elTagsTasks.classList.toggle('active');
-        model.set('tagsBox_task', !model.get('tagsBox_task'));
-      };
-      this.el.appendChild(elTagsTasks);
-
-      const elTagsToggleProjects = document.createElement('button');
-      elTagsToggleProjects.type = 'button';
-      elTagsToggleProjects.id = 'tagsProjectToggle';
-      elTagsToggleProjects.className =
-        `btnp primary${model.get('tagsBox_projects') ? ' active' : ''}`;
-      elTagsToggleProjects.textContent = '#';
-      elTagsToggleProjects.title = 'Mostra/nascondi tag evento';
-      elTagsToggleProjects.setAttribute(
-        'aria-label',
-        elTagsToggleProjects.title
-      );
-      elTagsToggleProjects.setAttribute(
-        'aria-pressed',
-        String(model.get('tagsBox_projects'))
-      );
-      elTagsToggleProjects.onclick = ev => {
-        ev.preventDefault();
-        elTagsToggleProjects.classList.toggle('active');
-        model.set('tagsBox_projects', !model.get('tagsBox_projects'));
-      };
-      this.el.appendChild(elTagsToggleProjects);
-
-      const elTagsToggleEvents = document.createElement('button');
-      elTagsToggleEvents.type = 'button';
-      elTagsToggleEvents.id = 'tagsEventsToggle';
-      elTagsToggleEvents.className =
-        `btnp primary${model.get('tagsBox_events') ? ' active' : ''}`;
-      elTagsToggleEvents.textContent = '>';
-      elTagsToggleEvents.title = 'Mostra/nascondi tag evento';
-      elTagsToggleEvents.setAttribute(
-        'aria-label',
-        elTagsToggleEvents.title
-      );
-      elTagsToggleEvents.setAttribute(
-        'aria-pressed',
-        String(model.get('tagsBox_events'))
-      );
-      elTagsToggleEvents.onclick = ev => {
-        ev.preventDefault();
-        elTagsToggleEvents.classList.toggle('active');
-        model.set('tagsBox_events', !model.get('tagsBox_events'));
-      };
-      this.el.appendChild(elTagsToggleEvents);
-
-      const elTagsTogglePersons = document.createElement('button');
-      elTagsTogglePersons.type = 'button';
-      elTagsTogglePersons.id = 'tagsPersonsToggle';
-      elTagsTogglePersons.className =
-        `btnp primary${model.get('tagsBox_persons') ? ' active' : ''}`;
-      elTagsTogglePersons.textContent = '@';
-      elTagsTogglePersons.title = 'Mostra/nascondi tag persone';
-      elTagsTogglePersons.setAttribute(
-        'aria-label',
-        elTagsTogglePersons.title
-      );
-      elTagsTogglePersons.setAttribute(
-        'aria-pressed',
-        String(model.get('tagsBox_persons'))
-      );
-      elTagsTogglePersons.onclick = ev => {
-        ev.preventDefault();
-        elTagsTogglePersons.classList.toggle('active');
-        model.set('tagsBox_persons', !model.get('tagsBox_persons'));
-      };
-      this.el.appendChild(elTagsTogglePersons);
-
-      const elTagsToggleGeneric = document.createElement('button');
-      elTagsToggleGeneric.type = 'button';
-      elTagsToggleGeneric.id = 'tagsGenericToggle';
-      elTagsToggleGeneric.className =
-        `btnp primary${model.get('tagsBox_generic') ? ' active' : ''}`;
-      elTagsToggleGeneric.textContent = '+';
-      elTagsToggleGeneric.title = 'Mostra/nascondi tag generici';
-      elTagsToggleGeneric.setAttribute(
-        'aria-label',
-        elTagsToggleGeneric.title
-      );
-      elTagsToggleGeneric.setAttribute(
-        'aria-pressed',
-        String(model.get('tagsBox_generic'))
-      );
-      elTagsToggleGeneric.onclick = ev => {
-        ev.preventDefault();
-        elTagsToggleGeneric.classList.toggle('active');
-        model.set('tagsBox_generic', !model.get('tagsBox_generic'));
-      };
-      this.el.appendChild(elTagsToggleGeneric);
+      const toggles = [
+        ['tagsBox_task', 'tagsTasksToggle', '!', 'task'],
+        ['tagsBox_projects', 'tagsProjectToggle', '#', 'progetti'],
+        ['tagsBox_events', 'tagsEventsToggle', '>', 'eventi'],
+        ['tagsBox_persons', 'tagsPersonsToggle', '@', 'persone'],
+        ['tagsBox_generic', 'tagsGenericToggle', '+', 'tag generici']
+      ];
+      for (const [key, id, text, label] of toggles) {
+        this.el.appendChild(view.el('button', {
+          type: 'button', id,
+          className: `btnp primary${model.get(key) ? ' active' : ''}`,
+          textContent: text,
+          title: `Mostra/nascondi ${label}`,
+          'aria-label': `Mostra/nascondi ${label}`,
+          'aria-pressed': String(model.get(key)),
+          onclick: () => model.set(key, !model.get(key))
+        }));
+      }
       return this.el;
     }
   },
@@ -2372,13 +2316,12 @@ const view = {
   TagsBoxList: {
     render() {
       console.log('[fn] TagsBoxList.render()');
-      this.el = eid('TagsBoxList');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'TagsBoxList')) return;
 
       const tagCategories = ['Projects', 'Events', 'Generic', 'Persons'];
       const sectionsDiv = {
         Tags: {
-          el: document.createElement('div'),
+          el: view.el('div'),
           filter: tagCategories
         }
       };
@@ -2388,15 +2331,18 @@ const view = {
 
       const untaggedTasks = tasks.filter(task => !task.firstTag);
       if (untaggedTasks.length) {
-        const section = document.createElement('div');
-        section.className = 'tagSection';
-        const title = document.createElement('div');
-        title.className = 'sectionTitle';
-        title.textContent = 'Senza tag: ';
+        const section = view.el('div', {
+          className: 'tagSection'
+        });
+        const title = view.el('div', {
+          className: 'sectionTitle',
+          textContent: 'Senza tag: '
+        });
         section.appendChild(title);
 
-        const taskList = document.createElement('ul');
-        taskList.className = 'tagList-tree';
+        const taskList = view.el('ul', {
+          className: 'tagList-tree'
+        });
         untaggedTasks.forEach(task => {
           taskList.appendChild(
             this.createTaskElement(task, modelTagsBoxTask)
@@ -2408,9 +2354,10 @@ const view = {
 
       Object.entries(sectionsDiv).forEach(([secName, {el, filter}]) => {
         el.className = 'tagSection';
-        const title = document.createElement('div');
-        title.className = 'sectionTitle';
-        title.textContent = secName + ': ';
+        const title = view.el('div', {
+          className: 'sectionTitle',
+          textContent: secName + ': '
+        });
         el.appendChild(title);
 
         const tagTree = businessLogic.buildTagTree(
@@ -2434,18 +2381,18 @@ const view = {
     },
 
     createTaskElement(task, tagsTaskActive) {
-      const li = document.createElement('li');
+      const li = view.el('li');
       if (!tagsTaskActive) {
         li.style.display = 'none';
       }
       li.style.listStyle = 'none';
       li.className = 'tagList-task task-' + task.task;
 
-      const header = document.createElement('div');
+      const header = view.el('div');
       header.style.display = 'flex';
       header.style.alignItems = 'center';
 
-      const span = document.createElement('span');
+      const span = view.el('span');
       const hasTag = Boolean(task.firstTag);
       const hasPanel = hasTag || Boolean(task.date);
       span.textContent = hasTag
@@ -2478,8 +2425,9 @@ const view = {
     },
 
     createTreeWrap(tagTree, tagsEyeActive, tagsTaskActive, depth) {
-      const ul = document.createElement('ul');
-      ul.className = 'tagList-tree';
+      const ul = view.el('ul', {
+        className: 'tagList-tree'
+      });
       tagTree.forEach(tag => {
         ul.appendChild(this.createTreeElement(
           tag,
@@ -2497,7 +2445,7 @@ const view = {
     },
 
     createTreeElement(tag, tagsEyeActive, tagsTaskActive, depth) {
-      const li = document.createElement('li');
+      const li = view.el('li');
       li.style.listStyle = 'none';
 
       if (
@@ -2509,12 +2457,13 @@ const view = {
       }
 
       li.className = `expanded tree-depth-${depth}`;
-      const header = document.createElement('div');
-      header.className = "tagtree-box " +tag.category;
+      const header = view.el('div', {
+        className: "tagtree-box " +tag.category
+      });
       header.style.borderRadius = '2px';
 
       const hasChildren = tag.children && tag.children.length > 0;
-      header.appendChild(view.createEl('i', {
+      const toggleBtn = header.appendChild(view.el('i', {
         className: hasChildren
           ? 'caret-icon fa-fw fa-regular fa-square-caret-down'
           : 'caret-icon fa-fw fa-regular fa-square',
@@ -2536,7 +2485,7 @@ const view = {
           }
       }));
 
-      header.appendChild(view.createEl('span', {
+      header.appendChild(view.el('span', {
         className: "tagtree-text",
         textContent: tag.name,
         style: {
@@ -2547,7 +2496,7 @@ const view = {
         onclick: async () => await page.home.addTagview(tag.name)
       }));
 
-      header.appendChild(view.createEl('button', {
+      header.appendChild(view.el('button', {
         className: tag.treed ? 'btn small primary transparent' : 'btn small muted transparent',
         innerHTML: tag.treed ? '<i class="fa-xs fa-fw fa-solid fa-eye fa-middle"></i>' : '<i class="fa-xs fa-fw fa-solid fa-eye-slash fa-middle"></i>',
         onclick: async ev => {
@@ -2573,7 +2522,7 @@ const view = {
         }
       }));
 
-      header.appendChild(view.createEl('button', {
+      header.appendChild(view.el('button', {
         className: 'btn small muted transparent',
         innerHTML:
           '<i class="fa-xs fa-fw fa-solid fa-pencil fa-middle"></i>',
@@ -2583,7 +2532,7 @@ const view = {
         }
       }));
 
-      header.appendChild(view.createEl('button', {
+      header.appendChild(view.el('button', {
         className: 'btn small muted transparent',
         innerHTML:
           '<i class="fa-xs fa-fw fa-solid fa-gear fa-middle"></i>',
@@ -2614,20 +2563,22 @@ const view = {
   },
 
   ActionRequiredBox: {
-    async render() {
+    render() {
       console.log('[fn] ActionRequiredBox.render()');
-      this.el = eid('ActionRequiredBox');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'ActionRequiredBox')) return;
 
-      const header = document.createElement('div');
-      header.className = 'action-required-header';
+      const header = view.el('div', {
+        className: 'action-required-header'
+      });
 
-      const title = document.createElement('h3');
-      title.textContent = 'Action Required';
+      const title = view.el('h3', {
+        textContent: 'Action Required'
+      });
       title.style.color = '#856404';
 
-      const countBadge = document.createElement('span');
-      countBadge.className = 'badge bg-warning text-dark';
+      const countBadge = view.el('span', {
+        className: 'badge bg-warning text-dark'
+      });
       const actionItems = businessLogic.getActionRequiredItems();
       countBadge.textContent = String(actionItems.length);
       countBadge.style.fontSize = '0.8em';
@@ -2635,8 +2586,9 @@ const view = {
       this.el.appendChild(header);
 
       actionItems.forEach(tag => {
-        const item = document.createElement('button');
-        item.type = 'button';
+        const item = view.el('button', {
+          type: 'button'
+        });
         const category = helper.getClassfromTag(tag);
         const categoryClass = {
           Projects: 'project',
@@ -2659,20 +2611,21 @@ const view = {
   JournalBox: {
     async render() {
       console.log('[fn] JournalBox.render()');
-      this.el = eid('JournalBox');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'JournalBox')) return;
 
       this.calendarYear = this.calendarYear || new Date().getFullYear();
       this.calendarMonth = this.calendarMonth !== undefined
         ? this.calendarMonth
         : new Date().getMonth();
 
-      const elJournalHeader = document.createElement('div');
-      elJournalHeader.className = 'calendar-header mini-calendar-header';
+      const elJournalHeader = view.el('div', {
+        className: 'calendar-header mini-calendar-header'
+      });
 
-      const elJournalPrevBtn = document.createElement('button');
-      elJournalPrevBtn.className = 'calendar-nav-btn';
-      elJournalPrevBtn.textContent = '‹';
+      const elJournalPrevBtn = view.el('button', {
+        className: 'calendar-nav-btn',
+        textContent: '‹'
+      });
       elJournalPrevBtn.onclick = () => {
         this.calendarMonth--;
         if (this.calendarMonth < 0) {
@@ -2682,17 +2635,20 @@ const view = {
         this.render();
       };
 
+      const root = this.el;
+      const generation = this.generation = (this.generation || 0) + 1;
       const numNotesOfMonth = await api.api(
         `/api/notes/${this.calendarYear}/${String(this.calendarMonth + 1).padStart(2, '0')}/count`
       );
-      console.debug('numNotesOfMonth', numNotesOfMonth);
+      if (generation !== this.generation || root !== eid('JournalBox')) return;
       const numNotesOfMonthMax = Math.max(
         ...Object.values(numNotesOfMonth)
       );
 
-      const elJournalNextBtn = document.createElement('button');
-      elJournalNextBtn.className = 'calendar-nav-btn';
-      elJournalNextBtn.textContent = '›';
+      const elJournalNextBtn = view.el('button', {
+        className: 'calendar-nav-btn',
+        textContent: '›'
+      });
       elJournalNextBtn.onclick = () => {
         this.calendarMonth++;
         if (this.calendarMonth > 11) {
@@ -2702,8 +2658,9 @@ const view = {
         this.render();
       };
 
-      const elJournalMonthLabel = document.createElement('span');
-      elJournalMonthLabel.className = 'calendar-month-label';
+      const elJournalMonthLabel = view.el('span', {
+        className: 'calendar-month-label'
+      });
       elJournalMonthLabel.textContent =
         `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}`;
 
@@ -2712,40 +2669,35 @@ const view = {
       elJournalHeader.appendChild(elJournalNextBtn);
       this.el.appendChild(elJournalHeader);
 
-      const elJournalTable = document.createElement('table');
-      elJournalTable.className = 'calendar-table mini-calendar';
+      const elJournalTable = view.el('table', {
+        className: 'calendar-table mini-calendar'
+      });
 
       const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-      const elJournalThead = document.createElement('thead');
-      const elJournalTrHead = document.createElement('tr');
+      const elJournalThead = view.el('thead');
+      const elJournalTrHead = view.el('tr');
       for (const day of weekdays) {
-        const elJournalTrHeadTh = document.createElement('th');
-        elJournalTrHeadTh.textContent = day;
+        const elJournalTrHeadTh = view.el('th', {
+          textContent: day
+        });
         elJournalTrHead.appendChild(elJournalTrHeadTh);
       }
       elJournalThead.appendChild(elJournalTrHead);
       elJournalTable.appendChild(elJournalThead);
 
-      let firstDay = new Date(
-        this.calendarYear,
-        this.calendarMonth,
-        1
-      ).getDay();
-      firstDay = firstDay === 0 ? 6 : firstDay - 1;
-      const daysInMonth = new Date(
-        this.calendarYear,
-        this.calendarMonth + 1,
-        0
-      ).getDate();
+      const {firstDay, daysInMonth} = businessLogic.getCalendarDays(
+        this.calendarYear, this.calendarMonth
+      );
 
       const tasks = model.get('tasks') || [];
-      const elJournalTbody = document.createElement('tbody');
-      let elJournalTrBody = document.createElement('tr');
+      const elJournalTbody = view.el('tbody');
+      let elJournalTrBody = view.el('tr');
       let dayCount = 0;
 
       for (let i = 0; i < firstDay; i++) {
-        const elJournalTdBody = document.createElement('td');
-        elJournalTdBody.textContent = '';
+        const elJournalTdBody = view.el('td', {
+          textContent: ''
+        });
         elJournalTrBody.appendChild(elJournalTdBody);
         dayCount++;
       }
@@ -2753,11 +2705,12 @@ const view = {
       for (let d = 1; d <= daysInMonth; d++) {
         if (dayCount % 7 === 0 && dayCount !== 0) {
           elJournalTbody.appendChild(elJournalTrBody);
-          elJournalTrBody = document.createElement('tr');
+          elJournalTrBody = view.el('tr');
         }
 
-        const elJournalTdBody = document.createElement('td');
-        elJournalTdBody.className = 'calendar-cell';
+        const elJournalTdBody = view.el('td', {
+          className: 'calendar-cell'
+        });
         const dateStr =
           `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
         const intensity = numNotesOfMonthMax > 0
@@ -2776,9 +2729,10 @@ const view = {
         elJournalTdBody.classList.add(`intensity-${intensity}`);
         elJournalTdBody.style.position = 'relative';
 
-        const dayNumEl = document.createElement('div');
-        dayNumEl.className = 'mini-calendar-day-number';
-        dayNumEl.textContent = d;
+        const dayNumEl = view.el('div', {
+          className: 'mini-calendar-day-number',
+          textContent: d
+        });
         elJournalTdBody.appendChild(dayNumEl);
 
         const weekdayIndex = dayCount % 7;
@@ -2797,9 +2751,10 @@ const view = {
 
         const tasksForDay = tasks.filter(t => t.duedate === dateStr);
         if (tasksForDay.length > 0) {
-          const dot = document.createElement('div');
-          dot.className = 'journal-task-dot';
-          dot.title = `${tasksForDay.length} task(s)`;
+          const dot = view.el('div', {
+            className: 'journal-task-dot',
+            title: `${tasksForDay.length} task(s)`
+          });
           elJournalTdBody.appendChild(dot);
         }
 
@@ -2811,8 +2766,9 @@ const view = {
       }
 
       while (dayCount % 7 !== 0) {
-        const elJournalTdBody = document.createElement('td');
-        elJournalTdBody.textContent = '';
+        const elJournalTdBody = view.el('td', {
+          textContent: ''
+        });
         elJournalTrBody.appendChild(elJournalTdBody);
         dayCount++;
       }
@@ -2824,17 +2780,16 @@ const view = {
 
   Calendar: {
     render() {
-      this.el = eid('CalendarMain');
-      this.el.innerHTML = '';
+      if (!view.mount(this, 'CalendarMain')) return;
       this.el.style.flex = '1';
 
       this.el_tb = this.el.appendChild(
-        view.createEl('div', {id: 'TopBar'})
+        view.el('div', {id: 'TopBar'})
       );
       view.TopBar.render();
 
       this.el_cw = this.el.appendChild(
-        view.createEl('div', {id: 'CalendarWrap'})
+        view.el('div', {id: 'CalendarWrap'})
       );
 
       this.calendarYear = this.calendarYear || new Date().getFullYear();
@@ -2842,12 +2797,14 @@ const view = {
         ? this.calendarMonth
         : new Date().getMonth();
 
-      const header = document.createElement('div');
-      header.className = 'calendar-header';
+      const header = view.el('div', {
+        className: 'calendar-header'
+      });
 
-      const prevBtn = document.createElement('button');
-      prevBtn.className = 'calendar-nav-btn';
-      prevBtn.textContent = '‹';
+      const prevBtn = view.el('button', {
+        className: 'calendar-nav-btn',
+        textContent: '‹'
+      });
       prevBtn.onclick = () => {
         this.calendarMonth--;
         if (this.calendarMonth < 0) {
@@ -2857,9 +2814,10 @@ const view = {
         this.render();
       };
 
-      const nextBtn = document.createElement('button');
-      nextBtn.className = 'calendar-nav-btn';
-      nextBtn.textContent = '›';
+      const nextBtn = view.el('button', {
+        className: 'calendar-nav-btn',
+        textContent: '›'
+      });
       nextBtn.onclick = () => {
         this.calendarMonth++;
         if (this.calendarMonth > 11) {
@@ -2869,8 +2827,9 @@ const view = {
         this.render();
       };
 
-      const monthLabel = document.createElement('span');
-      monthLabel.className = 'calendar-month-label';
+      const monthLabel = view.el('span', {
+        className: 'calendar-month-label'
+      });
       monthLabel.textContent =
         `${this.calendarYear}-${String(this.calendarMonth + 1).padStart(2, '0')}`;
 
@@ -2909,16 +2868,17 @@ const view = {
       });
 
       const buildListBlock = (title, list) => {
-        const wrap = document.createElement('div');
-        wrap.className = 'calendar-extras';
-        const h = document.createElement('div');
+        const wrap = view.el('div', {
+          className: 'calendar-extras'
+        });
+        const h = view.el('div');
         h.style.fontWeight = '700';
         h.style.margin = '6px 0';
         h.textContent = `${title} (${list.length})`;
         wrap.appendChild(h);
 
         if (list.length === 0) {
-          const empty = document.createElement('div');
+          const empty = view.el('div');
           empty.style.color = '#888';
           empty.style.fontSize = '0.9em';
           empty.textContent = '(none)';
@@ -2926,143 +2886,14 @@ const view = {
           return wrap;
         }
 
-        const listWrap = document.createElement('div');
+        const listWrap = view.el('div');
         listWrap.style.display = 'flex';
         listWrap.style.flexDirection = 'column';
 
-        list.forEach(n => {
-          let taskClass = '';
-          if (n.task != null && n.task != '') {
-            taskClass = 'task-' + n.task;
-          }
-
-          const elNoteItem = view.createEl('div', {
-            className: `noteItem ${taskClass}`,
-            dataset: {id: n.id}
-          });
-
-          const elNoteDate = elNoteItem.appendChild(
-            view.createEl('div', {
-              className: 'noteDate flex-col',
-              innerHTML:
-                new Date(n.date).toLocaleString(
-                  'default', {month: 'short'}
-                ) +
-                '-' + n.date.substring(8, 10) +
-                (
-                  n.duedate
-                    ? '<br><span class="color-purple-4">' +
-                      new Date(n.duedate).toLocaleString(
-                        'default', {month: 'short'}
-                      ) +
-                      '-' + n.duedate.substring(8, 10) + '</span>'
-                    : ''
-                )
-            })
-          );
-
-          const elNoteDays = elNoteItem.appendChild(
-            view.createEl('div', {
-              className: 'noteDays flex-col',
-              innerHTML:
-                helper.diffToToday(new Date(n.date)) +
-                (
-                  n.duedate
-                    ? '<br><span class="color-purple-4">' +
-                      helper.diffToToday(new Date(n.duedate)) +
-                      '</span>'
-                    : ''
-                )
-            })
-          );
-
-          {
-            const elReplyIndicators = elNoteItem.appendChild(
-              view.createEl('div', {
-                className: 'noteReplyIndicators flex-col',
-                style:
-                  'display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:1px; padding-left:2px;'
-              })
-            );
-
-            if (
-              !elNoteItem.classList.contains('noteItem-related-parent')
-            ) {
-              elReplyIndicators.appendChild(
-                view.createEl('button', {
-                  className: n.replied_to
-                    ? 'btn primary small transparent'
-                    : 'btn muted small transparent',
-                  innerHTML:
-                    '<i class="fa-solid fa-caret-up fa-2xs fa-fw"></i>',
-                  title: n.replied_to
-                    ? 'Risponde a un\'altra nota'
-                    : 'Nessuna nota a cui risponde',
-                  'aria-label': n.replied_to
-                    ? 'Risponde a un\'altra nota'
-                    : 'Nessuna nota a cui risponde',
-                  tabindex: n.replied_to ? 0 : -1,
-                  onclick: () => {
-                    if (n.replied_to) {
-                      view.Main.openRelatedNote(
-                        n.replied_to,
-                        'above',
-                        elNoteItem
-                      );
-                    }
-                  }
-                })
-              );
-            }
-
-            if (
-              !elNoteItem.classList.contains('noteItem-related-child')
-            ) {
-              elReplyIndicators.appendChild(
-                view.createEl('button', {
-                  className: n.reply
-                    ? 'btn primary small transparent'
-                    : 'btn muted small transparent',
-                  innerHTML:
-                    '<i class="fa-solid fa-caret-down fa-2xs fa-fw"></i>',
-                  title: n.reply
-                    ? 'Ha una risposta'
-                    : 'Nessuna risposta',
-                  'aria-label': n.reply
-                    ? 'Ha una risposta'
-                    : 'Nessuna risposta',
-                  tabindex: n.reply ? 0 : -1,
-                  onclick: ev => {
-                    if (n.reply) {
-                      ev.stopPropagation();
-                      view.Main.openRelatedNote(
-                        n.reply,
-                        'below',
-                        elNoteItem
-                      );
-                    } else {
-                      ev.stopPropagation();
-                      view.EditorWrap.startReply(n);
-                    }
-                  }
-                })
-              );
-            }
-          }
-
-          const elNoteText = elNoteItem
-            .appendChild(view.createEl('div', {
-              style: {
-                flex: '1',
-                display: 'flex',
-                flexDirection: 'column',
-                paddingLeft: '5px'
-              }
-            }))
-            .appendChild(view.Main.genNoteText(n, ''));
-
-          listWrap.appendChild(elNoteItem);
-        });
+        listWrap.classList.add('notesList');
+        list.forEach(note => listWrap.appendChild(
+          view.Main.genNoteItem(note, '', null, {editable: false})
+        ));
 
         wrap.appendChild(listWrap);
         return wrap;
@@ -3072,40 +2903,35 @@ const view = {
         buildListBlock('Unscheduled / earlier than this month', aboveTasks)
       );
 
-      const table = document.createElement('table');
-      table.className = 'calendar-table';
+      const table = view.el('table', {
+        className: 'calendar-table'
+      });
       const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-      const thead = document.createElement('thead');
-      const trHead = document.createElement('tr');
+      const thead = view.el('thead');
+      const trHead = view.el('tr');
 
       weekdays.forEach(w => {
-        const th = document.createElement('th');
-        th.textContent = w;
+        const th = view.el('th', {
+          textContent: w
+        });
         trHead.appendChild(th);
       });
       thead.appendChild(trHead);
       table.appendChild(thead);
 
-      let firstDay = new Date(
-        this.calendarYear,
-        this.calendarMonth,
-        1
-      ).getDay();
-      firstDay = firstDay === 0 ? 6 : firstDay - 1;
-      const daysInMonth = new Date(
-        this.calendarYear,
-        this.calendarMonth + 1,
-        0
-      ).getDate();
+      const {firstDay, daysInMonth} = businessLogic.getCalendarDays(
+        this.calendarYear, this.calendarMonth
+      );
 
-      const tbody = document.createElement('tbody');
-      let tr = document.createElement('tr');
+      const tbody = view.el('tbody');
+      let tr = view.el('tr');
       let dayCount = 0;
 
       for (let i = 0; i < firstDay; i++) {
-        const td = document.createElement('td');
-        td.className = 'calendar-cell-empty';
-        td.textContent = '';
+        const td = view.el('td', {
+          className: 'calendar-cell-empty',
+          textContent: ''
+        });
         tr.appendChild(td);
         dayCount++;
       }
@@ -3113,11 +2939,12 @@ const view = {
       for (let d = 1; d <= daysInMonth; d++) {
         if (dayCount % 7 === 0 && dayCount !== 0) {
           tbody.appendChild(tr);
-          tr = document.createElement('tr');
+          tr = view.el('tr');
         }
 
-        const td = document.createElement('td');
-        td.className = 'calendar-cell';
+        const td = view.el('td', {
+          className: 'calendar-cell'
+        });
         const weekdayIndex = dayCount % 7;
         if (weekdayIndex === 5 || weekdayIndex === 6) {
           td.classList.add('calendar-weekend');
@@ -3132,7 +2959,7 @@ const view = {
           td.classList.add('calendar-today');
         }
 
-        const dayNum = document.createElement('div');
+        const dayNum = view.el('div');
         dayNum.style.fontWeight = '600';
         dayNum.style.marginBottom = '6px';
         dayNum.textContent = d;
@@ -3143,20 +2970,19 @@ const view = {
         const tasksForDay = tasks.filter(t => t.duedate === dateStr);
 
         if (tasksForDay.length > 0) {
-          const tasksWrap = document.createElement('div');
+          const tasksWrap = view.el('div');
           tasksWrap.style.display = 'flex';
           tasksWrap.style.flexDirection = 'column';
           tasksWrap.style.gap = '4px';
 
           tasksForDay.forEach(t => {
-            const tEl = document.createElement('div');
-            tEl.className = `tagList-task task-${t.task || 'low'}`;
+            const tEl = view.el('div', {
+              className: `tagList-task task-${t.task || 'low'}`
+            });
             tEl.style.padding = '4px';
             tEl.style.borderRadius = '6px';
             tEl.title = t.text;
-            tEl.textContent = t.duedate + ' - ' + (t.text.length > 80)
-              ? t.text.slice(0, 80) + '…'
-              : t.text;
+            tEl.textContent = `${t.duedate} - ${t.text.length > 80 ? t.text.slice(0, 80) + '…' : t.text}`;
             tasksWrap.appendChild(tEl);
           });
           td.appendChild(tasksWrap);
@@ -3167,9 +2993,10 @@ const view = {
       }
 
       while (dayCount % 7 !== 0) {
-        const td = document.createElement('td');
-        td.className = 'calendar-cell-empty';
-        td.textContent = '';
+        const td = view.el('td', {
+          className: 'calendar-cell-empty',
+          textContent: ''
+        });
         tr.appendChild(td);
         dayCount++;
       }
@@ -3185,38 +3012,37 @@ const view = {
 
   Explorer: {
     async render() {
-      this.el = eid('app');
-      this.el.replaceChildren();
+      if (!view.mount(this, 'app')) return;
 
       const shell = this.el.appendChild(
-        view.createEl('div', {id: 'ExplorerApp'})
+        view.el('div', {id: 'ExplorerApp'})
       );
-      shell.appendChild(view.createEl('div', {id: 'TopBar'}));
+      shell.appendChild(view.el('div', {id: 'TopBar'}));
       view.TopBar.render();
 
       const layout = shell.appendChild(
-        view.createEl('div', {id: 'ExplorerLayout'})
+        view.el('div', {id: 'ExplorerLayout'})
       );
       const sidebar = layout.appendChild(
-        view.createEl('aside', {id: 'ExplorerSidebar'})
+        view.el('aside', {id: 'ExplorerSidebar'})
       );
       const sidebarTitle = sidebar.appendChild(
-        document.createElement('h2')
+        view.el('h2')
       );
       sidebarTitle.textContent = 'Tabelle';
 
       this.tableList = sidebar.appendChild(
-        view.createEl('nav', {
+        view.el('nav', {
           id: 'ExplorerTableList',
           'aria-label': 'Tabelle del database'
         })
       );
 
       const workspace = layout.appendChild(
-        view.createEl('main', {id: 'ExplorerWorkspace'})
+        view.el('main', {id: 'ExplorerWorkspace'})
       );
       this.results = workspace.appendChild(
-        view.createEl('section', {
+        view.el('section', {
           id: 'ExplorerResults',
           'aria-label': 'Risultati query'
         })
@@ -3226,19 +3052,19 @@ const view = {
         'Seleziona una tabella o inserisci una query SQL.';
 
       const form = workspace.appendChild(
-        view.createEl('form', {id: 'ExplorerQueryForm'})
+        view.el('form', {id: 'ExplorerQueryForm'})
       );
       const toolbar = form.appendChild(
-        view.createEl('div', {className: 'explorer-query-toolbar'})
+        view.el('div', {className: 'explorer-query-toolbar'})
       );
       const queryLabel = toolbar.appendChild(
-        document.createElement('label')
+        view.el('label')
       );
       queryLabel.htmlFor = 'ExplorerQuery';
       queryLabel.textContent = 'Query SQL';
 
       const runButton = toolbar.appendChild(
-        view.createEl('button', {
+        view.el('button', {
           type: 'submit',
           className: 'btn primary',
           innerHTML:
@@ -3247,7 +3073,7 @@ const view = {
       );
 
       this.queryInput = form.appendChild(
-        view.createEl('textarea', {
+        view.el('textarea', {
           id: 'ExplorerQuery',
           name: 'query',
           rows: 4,
@@ -3261,7 +3087,7 @@ const view = {
       );
 
       this.queryStatus = form.appendChild(
-        view.createEl('div', {
+        view.el('div', {
           id: 'ExplorerQueryStatus',
           role: 'status',
           'aria-live': 'polite'
@@ -3285,9 +3111,11 @@ const view = {
     },
 
     async loadTables() {
+      const root = this.tableList;
       this.tableList.textContent = 'Caricamento…';
       try {
         const tables = await api.api('/api/explorer/tables');
+        if (root !== this.tableList || !root.isConnected) return;
         this.tableList.replaceChildren();
 
         if (!tables.length) {
@@ -3296,10 +3124,11 @@ const view = {
         }
 
         tables.forEach(tableName => {
-          const tableButton = document.createElement('button');
-          tableButton.type = 'button';
-          tableButton.className = 'explorer-table-button';
-          tableButton.textContent = tableName;
+          const tableButton = view.el('button', {
+            type: 'button',
+            className: 'explorer-table-button',
+            textContent: tableName
+          });
           tableButton.onclick = () => this.selectTable(
             tableName,
             tableButton
@@ -3312,6 +3141,7 @@ const view = {
           this.tableList.firstElementChild
         );
       } catch (error) {
+        if (root !== this.tableList || !root.isConnected) return;
         this.tableList.textContent = `Errore: ${error.message}`;
       }
     },
@@ -3329,6 +3159,8 @@ const view = {
     },
 
     async runQuery(query = this.queryInput.value) {
+      const request = this.queryRequest = (this.queryRequest || 0) + 1;
+      const root = this.results;
       this.queryStatus.textContent = 'Esecuzione…';
       this.queryStatus.dataset.state = 'loading';
 
@@ -3337,6 +3169,7 @@ const view = {
           method: 'POST',
           body: {query}
         });
+        if (request !== this.queryRequest || root !== this.results || !root.isConnected) return;
         this.renderResults(result);
         const count = result.rows.length;
         this.queryStatus.textContent = result.truncated
@@ -3344,10 +3177,12 @@ const view = {
           : `${count} righe.`;
         this.queryStatus.dataset.state = 'success';
       } catch (error) {
+        if (request !== this.queryRequest || root !== this.results || !root.isConnected) return;
         this.results.replaceChildren();
-        const message = document.createElement('p');
-        message.className = 'explorer-query-error';
-        message.textContent = error.message;
+        const message = view.el('p', {
+          className: 'explorer-query-error',
+          textContent: error.message
+        });
         this.results.appendChild(message);
         this.queryStatus.textContent = 'Query non eseguita.';
         this.queryStatus.dataset.state = 'error';
@@ -3355,13 +3190,15 @@ const view = {
     },
 
     renderResults(result) {
-      const table = document.createElement('table');
-      table.className = 'explorer-result-table';
+      const table = view.el('table', {
+        className: 'explorer-result-table'
+      });
 
       const head = table.createTHead().insertRow();
       result.columns.forEach(column => {
-        const cell = document.createElement('th');
-        cell.textContent = column;
+        const cell = view.el('th', {
+          textContent: column
+        });
         head.appendChild(cell);
       });
 
@@ -3384,30 +3221,98 @@ const view = {
 
 // MODAL
 const modal = {
+  shortcutsModal: {
+    el: null,
+    render() {
+      if (this.el?.open) return;
+      const previousFocus = document.activeElement;
+      const dialog = document.createElement('dialog');
+      this.el = dialog;
+      dialog.setAttribute('aria-labelledby', 'shortcuts-title');
+      dialog.style.cssText = 'max-width:680px;width:calc(100% - 48px);max-height:80vh;overflow:auto;padding:24px;border:1px solid #888;border-radius:12px;';
+      const shortcuts = [
+        ['Alt+A', 'Focus note list of the active tab', 'Anywhere (when available)'],
+        ['Alt+S', 'Focus Monaco / fallback editor', 'Anywhere (when available)'],
+        ['Alt+?', 'Open this shortcut recap (Shift may be needed for ?)', 'Anywhere'],
+        ['Alt+F', 'Open note filter', 'Anywhere'],
+        ['Alt+N', 'Focus editor at the end of the note', 'Home'],
+        ['Alt+T', 'Open today’s tab', 'Home'],
+        ['Alt+W', 'Close active tab (except today)', 'Home'],
+        ['Alt+1 … Alt+9', 'Activate tab by position', 'Home'],
+        ['Alt+← / Alt+→', 'Activate previous / next tab', 'Home'],
+        ['Alt+↑', 'Maximize editor', 'Editor focused'],
+        ['Alt+↑ / Alt+↓', 'Maximize / restore active tab', 'Home; ↑ outside editor'],
+        ['Ctrl+Enter', 'Save or update note', 'Editor'],
+        ['Ctrl+D', 'Insert today’s date at end of note', 'Editor'],
+        ['Ctrl+B / Ctrl+I / Ctrl+K', 'Wrap selection in bold / italic / code', 'Editor'],
+        ['Ctrl+Alt+D (Cmd+Alt+D on Mac)', 'Select next matching occurrence', 'Monaco'],
+        ['Alt+click', 'Add cursor', 'Monaco'],
+        ['Tab', 'Insert two spaces', 'Fallback editor'],
+        ['Ctrl+Enter / Cmd+Enter', 'Run query', 'Explorer query'],
+        ['Enter / Tab', 'Add first suggested tag', 'Filter search'],
+        ['Backspace', 'Remove last token when search is empty', 'Filter search'],
+        ['Escape', 'Close shortcut recap or image viewer', 'Modal']
+      ];
+      dialog.innerHTML = `<h2 id="shortcuts-title">Keyboard shortcuts</h2>
+        <table style="width:100%;border-collapse:collapse;text-align:left">
+          <thead><tr><th>Shortcut</th><th>Action</th><th>Context</th></tr></thead>
+          <tbody>${shortcuts.map(row => `<tr>${row.map(cell =>
+            `<td style="padding:8px 6px;border-bottom:1px solid #8884">${escapeHTML(cell)}</td>`
+          ).join('')}</tr>`).join('')}</tbody>
+        </table>
+        <p>Monaco’s standard editing shortcuts also remain available. Use the editor’s Minimize button to restore its size.</p>
+        <button type="button" class="btn secondary" autofocus>Close</button>`;
+      dialog.querySelector('button').onclick = () => this.close();
+      dialog.addEventListener('close', () => {
+        dialog.remove();
+        if (this.el === dialog) this.el = null;
+        if (previousFocus?.isConnected &&
+            (document.activeElement === document.body || dialog.contains(document.activeElement))) {
+          previousFocus.focus();
+        }
+      });
+      dialog.addEventListener('keydown', ev => {
+        // Keep home shortcuts from acting behind the modal.
+        ev.stopPropagation();
+      });
+      document.body.appendChild(dialog);
+      dialog.showModal();
+    },
+    close() {
+      this.el?.close();
+    }
+  },
   imageViewer: {
     el: null,
     onKeydown: null,
 
     open(src, alt = '') {
+      return this.render(src, alt);
+    },
+
+    render(src, alt = '') {
       this.close();
-      this.el = document.createElement('div');
+      this.previousFocus = document.activeElement;
+      this.el = view.el('div');
       this.el.className = 'image-lightbox';
       this.el.setAttribute('role', 'dialog');
       this.el.setAttribute('aria-modal', 'true');
       this.el.setAttribute('aria-label', 'Immagine a schermo intero');
 
-      const closeButton = document.createElement('button');
-      closeButton.type = 'button';
-      closeButton.className = 'image-lightbox-close';
+      const closeButton = view.el('button', {
+        type: 'button',
+        className: 'image-lightbox-close'
+      });
       closeButton.setAttribute('aria-label', 'Chiudi immagine');
       closeButton.title = 'Chiudi';
       closeButton.innerHTML = '<i class="fa-solid fa-xmark"></i>';
       closeButton.addEventListener('click', () => this.close());
 
-      const image = document.createElement('img');
-      image.className = 'image-lightbox-image';
-      image.src = src;
-      image.alt = alt;
+      const image = view.el('img', {
+        className: 'image-lightbox-image',
+        src: src,
+        alt: alt
+      });
 
       this.el.append(closeButton, image);
       this.el.addEventListener('click', ev => {
@@ -3429,9 +3334,9 @@ const modal = {
         document.removeEventListener('keydown', this.onKeydown);
       }
       this.onKeydown = null;
+      if (this.previousFocus?.isConnected) this.previousFocus.focus();
     }
   },
-
   filterModal: {
     el: null,
     tokens: [],
@@ -3439,7 +3344,7 @@ const modal = {
     render() {
       if (this.el) this.el.remove();
       this.tokens = [];
-      this.el = document.createElement('div');
+      this.el = view.el('div');
       this.el.className = 'modal';
       this.el.innerHTML = `
         <section class="modal-content filter-dialog" role="dialog" aria-modal="true" aria-labelledby="filter-dialog-title">
@@ -3470,8 +3375,9 @@ const modal = {
       const renderTokens = () => {
         tokenList.innerHTML = '';
         this.tokens.forEach((token, index) => {
-          const chip = document.createElement('button');
-          chip.type = 'button';
+          const chip = view.el('button', {
+            type: 'button'
+          });
           chip.className =
             `filter-rule-token ${token.kind === 'tag' ? 'filter-rule-tag' : 'filter-rule-operator'}`;
           chip.textContent = token.value;
@@ -3504,12 +3410,13 @@ const modal = {
           .filter(tag => tag.name.toLocaleLowerCase().includes(query))
           .slice(0, 8)
           .forEach(tag => {
-            const option = document.createElement('button');
-            option.type = 'button';
-            option.className = 'filter-tag-suggestion';
+            const option = view.el('button', {
+              type: 'button',
+              className: 'filter-tag-suggestion'
+            });
             option.setAttribute('role', 'option');
             option.innerHTML =
-              `<span>${tag.name}</span><span class="tag-category">${tag.category}</span>`;
+              `<span>${escapeHTML(tag.name)}</span><span class="tag-category">${escapeHTML(tag.category)}</span>`;
             option.onmousedown = ev => ev.preventDefault();
             option.onclick = () => addToken(tag.name, 'tag');
             suggestions.appendChild(option);
@@ -3554,12 +3461,13 @@ const modal = {
         ['(', 'parentesi aperta'],
         [')', 'parentesi chiusa']
       ].forEach(([value, label]) => {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'btn standard';
-        button.textContent = value;
-        button.title = label;
-        button.onclick = () => addToken(value, 'operator');
+        const button = view.el('button', {
+          type: 'button',
+          className: 'btn standard',
+          textContent: value,
+          title: label,
+          onclick: () => addToken(value, 'operator')
+        });
         operators.appendChild(button);
       });
 
@@ -3576,112 +3484,62 @@ const modal = {
 
       form.onsubmit = async ev => {
         ev.preventDefault();
+        if (form.dataset.saving) return;
+        form.dataset.saving = 'true';
         const rule = this.tokens.map(token => token.value).join(' ');
         try {
           const notes = await api.api('/api/notes/filter', {
             method: 'POST',
             body: {rule}
           });
-          dialog.remove();
-          this.el = null;
+          if (this.el !== dialog || !dialog.isConnected) return;
           await page.home.addFilterview(rule, notes);
+          dialog.remove();
+          if (this.el === dialog) this.el = null;
         } catch (err) {
           error.textContent = err.message;
+        } finally {
+          delete form.dataset.saving;
         }
       };
       search.focus();
     }
   },
-
-  editModal: {
-    el: null,
-
-    render(note, editCallback) {
-      if (this.el) this.el.remove();
-      this.el = document.createElement('div');
-      this.el.className = 'modal';
-      this.el.innerHTML = `
-        <div class="modal-content">
-          <h3>Edit Note</h3>
-          <form id="editModal" class="myform" style="flex: 1">
-            <textarea name="text" class="modal-textarea">${escapeHTML(note.text)}</textarea>
-            <div>duedate: ${note.duedate} </div>
-            <div>task: ${note.task} </div>
-            <div class="modal-actions">
-              <button type="submit" value="cancel" class="btn standard" id="edit-modal-cancel">Cancel</button>
-              <button type="submit" value="save" class="btn primary" id="edit-modal-save">Save</button>
-            </div>
-          </form>
-        </div>
-      `;
-      document.body.appendChild(this.el);
-
-      const editModal = eid('editModal');
-      editModal.onsubmit = async ev => {
-        ev.preventDefault();
-        const btn = ev.submitter;
-        if (btn.value == 'cancel') {
-          this.el.remove();
-          this.el = null;
-        } else {
-          const updated = await api.api(`/api/notes/${note.id}`, {
-            method: 'PATCH',
-            body: Object.fromEntries(new FormData(ev.target).entries())
-          });
-          if (
-            !updated ||
-            !updated.note.id ||
-            updated.status != 'patched'
-          ) {
-            alert('Error saving note');
-            return;
-          }
-
-          editCallback?.(updated.note, note.tags, note.date);
-          await model.tags.reload();
-          await model.tasks.reload();
-          view.TagsBoxList.render();
-          this.el.remove();
-          this.el = null;
-        }
-      };
-    }
-  },
-
   editTreeTagModal: {
     el: null,
 
     render(tag) {
       console.debug('[fn] openEditTreeTagModal', tag);
-      const tagObj = model.get('tags').find(t => t.name === tag);
+      const tagObj = (model.get('tags') || []).find(t => t.name === tag);
+      if (!tagObj) return;
       console.debug('[fn] openEditTreeTagModal', tagObj);
       if (this.el) this.el.remove();
 
-      this.el = document.createElement('div');
+      this.el = view.el('div');
       this.el.className = 'modal';
       this.el.innerHTML = `
         <div class="modal-content">
           <h3>Edit Tag</h3>
           <form id="EditTagForm" class="myform" style="flex: 1">
             <label>
-              <input type="radio" id="editform-treed" name="treed" value="true" ${tagObj.treed ? 'checked' : ''}>
+              <input type="radio" id="editform-treed-visible" name="treed" value="true" ${tagObj.treed ? 'checked' : ''}>
               Visible
             </label>
             <label>
-              <input type="radio" id="editform-treed" name="treed" value="false" ${!tagObj.treed ? 'checked' : ''}>
+              <input type="radio" id="editform-treed-hidden" name="treed" value="false" ${!tagObj.treed ? 'checked' : ''}>
               Hidden
             </label>
             <div>
-              <label for="rename">Rename Tag:</label>
+              <label for="editform-rename">Rename Tag:</label>
               <input type="text" id="editform-rename" name="rename" value="${escapeHTML(tagObj.name)}" placeholder="Enter new name">
             </div>
             <div>
-              <label for="parent">Parent Tag:</label>
+              <label for="editform-parent">Parent Tag:</label>
               <input type="text" id="editform-parent" name="parent" value="${escapeHTML(tagObj.parent)}" placeholder="Enter parent tag">
               <div id="editform-parent-suggestions" class="filter-tag-suggestions" role="listbox" style="display: none;"></div>
             </div>
             <div style="flex: 1; display: flex; flex-direction: column">
-              <label for="content">Content:</label>
+              <label for="editform-content">Content:</label>
               <textarea style="flex:1" id="editform-content" name="content" class="modal-textarea">${escapeHTML(tagObj.content)}</textarea>
             </div>
             <div></div>
@@ -3689,8 +3547,8 @@ const modal = {
               <button type="submit" value="cancel" class="btn standard" id="edit-tree-modal-cancel">Cancel</button>
               <button type="submit" value="save" class="btn primary" id="edit-tree-modal-save">Save</button>
             </div>
-          </div>
-        </form>
+          </form>
+        </div>
       `;
       document.body.appendChild(this.el);
 
@@ -3720,9 +3578,10 @@ const modal = {
 
         parentSuggestions.replaceChildren();
         matches.forEach(candidate => {
-          const option = document.createElement('button');
-          option.type = 'button';
-          option.className = 'filter-tag-suggestion';
+          const option = view.el('button', {
+            type: 'button',
+            className: 'filter-tag-suggestion'
+          });
           option.setAttribute('role', 'option');
           option.textContent = `${candidate.name} · ${candidate.category}`;
           option.onmousedown = ev => ev.preventDefault();
@@ -3753,557 +3612,260 @@ const modal = {
         }
       });
 
-      const EditTagForm = eid('EditTagForm');
+      const dialog = this.el;
+      const EditTagForm = dialog.querySelector('#EditTagForm');
       EditTagForm.onsubmit = async ev => {
         ev.preventDefault();
-        const btn = ev.submitter;
-
-        if (btn.value == 'cancel') {
-          this.el.remove();
-          this.el = null;
-        } else {
-          const formData = new FormData(ev.target);
+        if (ev.submitter?.value === 'cancel') {
+          dialog.remove();
+          if (this.el === dialog) this.el = null;
+          return;
+        }
+        if (EditTagForm.dataset.saving) return;
+        EditTagForm.dataset.saving = 'true';
+        const save = dialog.querySelector('#edit-tree-modal-save');
+        save.disabled = true;
+        let saved = false;
+        try {
           const updated = await api.api(
-            `/api/tags/${tagObj.category}/${tag.substring(1)}`,
-            {
-              method: 'PATCH',
-              body: Object.fromEntries(formData.entries())
-            }
+            `/api/tags/${encodeURIComponent(tagObj.category)}/${encodeURIComponent(helper.getAnonymizedTag(tag))}`,
+            {method: 'PATCH', body: Object.fromEntries(new FormData(EditTagForm).entries())}
           );
-          model.set('tags', tags => {
-            const index = tags.findIndex(
-              item => item.name === updated.name
-            );
-            if (index !== -1) tags[index] = updated;
-            return tags;
-          });
-
+          saved = true;
           businessLogic.completeActionRequiredTag(tagObj.name);
-          await view.ActionRequiredBox.render();
-          this.el.remove();
-          this.el = null;
+          await page.home.refreshMetadata();
+          view.ActionRequiredBox.render();
+          if (updated.name !== tagObj.name && eid('Main') && model.get('tagsVisible').includes(tagObj.name)) {
+            page.home.removeTagview(tagObj.name);
+            await page.home.addTagview(updated.name);
+          }
+          dialog.remove();
+          if (this.el === dialog) this.el = null;
+        } catch (error) {
+          alert(`${saved ? 'Tag salvato, aggiornamento fallito' : 'Salvataggio non riuscito'}: ${error.message}`);
+        } finally {
+          delete EditTagForm.dataset.saving;
+          save.disabled = false;
         }
       };
     }
   },
-
   editTagPropertiesModal: {
     el: null,
 
     async render(tag) {
-      const tagObj = (model.get('tags') || []).find(
-        item => item.name === tag
-      );
+      const tagObj = (model.get('tags') || []).find(item => item.name === tag);
       if (!tagObj) return;
       if (this.el) this.el.remove();
-
-      const el = this.el = document.createElement('div');
-      el.className = 'modal';
-      el.innerHTML = `
-        <div class="modal-content">
-          <h3>Proprietà di ${escapeHTML(tag)}</h3>
-          <p role="status">Caricamento proprietà…</p>
-          <form class="myform" hidden>
-            <div class="tag-properties-list" style="overflow:auto"></div>
-            <button type="button" data-add class="btn standard">Aggiungi proprietà</button>
-            <div class="modal-actions">
-              <button type="button" data-close class="btn standard">Chiudi</button>
-              <button type="submit" class="btn primary">Salva</button>
-            </div>
-          </form>
-          <button type="button" data-dismiss class="btn standard">Chiudi</button>
-        </div>`;
-      document.body.appendChild(el);
-
-      const close = () => {
-        el.remove();
-        if (this.el === el) this.el = null;
-      };
-      el.querySelector('[data-dismiss]').onclick = close;
-      el.querySelector('[data-close]').onclick = close;
-
-      const status = el.querySelector('[role="status"]');
-      const form = el.querySelector('form');
-      form.style.display = 'none';
-      const list = el.querySelector('.tag-properties-list');
-      const url =
-        `/api/tags/${encodeURIComponent(tagObj.category)}/${encodeURIComponent(helper.getAnonymizedTag(tag))}/properties`;
+      this.el = view.el('div', {className: 'modal'});
+      const modalContent = this.el.appendChild(view.el('div', {className: 'modal-content'}));
+      modalContent.appendChild(view.el('h3', {textContent: tag}));
+      if (tagObj.category === "Events") {
+        const dateControl = modalContent.appendChild(view.el('div', {className: 'tag-box',}));
+        const dateLabel = dateControl.appendChild(view.el('label', {htmlFor: 'tag-date',textContent: 'Data:',}));
+        const dateInput = dateControl.appendChild(view.el('input', {type: 'date',id: 'tag-date',value: tagObj.date || ''}));
+        const dateSave = dateControl.appendChild(view.el('button', {
+          type: 'button',
+          className: 'btn primary',
+          textContent: 'Salva',
+          onclick: async () => {
+            await businessLogic.updateTagDate(tagObj, dateInput.value);
+            this.el.remove();
+            if (this.el === this.el) this.el = null;
+          }
+        }));
+      }
+      const propertiesBox = modalContent.appendChild(view.el('div', {className: 'tag-box',}));
+      const propertiesLabel = propertiesBox.appendChild(view.el('label', {textContent: 'Proprietà:'}));
+      const propertiesList = propertiesBox.appendChild(view.el('div', {className: 'tag-box'}));
+      const controls = modalContent.appendChild(view.el('div', {className: 'tag-properties-controls',}));
+      const closeButton = controls.appendChild(view.el('button', {
+        type: 'button',
+        'data-dismiss': '',
+        className: 'btn muted',
+        textContent: 'Chiudi',
+        onclick: () => {
+          this.el.remove();
+          if (this.el === this.el) this.el = null;
+        }
+      }));
+      document.body.appendChild(this.el);
 
       const addRow = (property = {key: '', value: ''}) => {
-        const row = document.createElement('div');
-        row.className = 'property-item';
+        const row = view.el('div', {
+          className: 'property-item property-drag-handle',
+          draggable: true,
+          "data-key": property.key
+        });
         row.innerHTML = `
-          <label>Chiave <input data-key required></label>
-          <label>Valore <textarea data-value class="modal-textarea"></textarea></label>
-          <button type="button" class="btn standard">Rimuovi</button>`;
-        row.querySelector('[data-key]').value = property.key;
-        row.querySelector('[data-value]').value = property.value;
-        row.querySelector('button').onclick = () => row.remove();
-        list.appendChild(row);
-      };
-
-      el.querySelector('[data-add]').onclick = () => addRow();
-
-      try {
-        const response = await api.api(url);
-        if (this.el !== el) return;
-        response.properties.forEach(addRow);
-        status.textContent = response.properties.length
-          ? ''
-          : 'Nessuna proprietà associata.';
-        form.hidden = false;
-        form.style.display = '';
-        el.querySelector('[data-dismiss]').hidden = true;
-      } catch (error) {
-        status.textContent =
-          `Impossibile caricare le proprietà: ${error.message}`;
-        return;
-      }
-
-      form.onsubmit = async ev => {
-        ev.preventDefault();
-
-        const properties = Array.from(list.children, row => ({
-          key: row.querySelector('[data-key]').value.trim(),
-          value: row.querySelector('[data-value]').value
-        }));
-
-        if (
-          properties.some(p => !p.key || /[\[\]\r\n]/.test(p.key)) ||
-          new Set(properties.map(p => p.key)).size !== properties.length
-        ) {
-          status.textContent =
-            'Usa chiavi non vuote, uniche e senza parentesi quadre.';
-          return;
-        }
-
-        const controls = Array.from(
-          form.querySelectorAll('button, input, textarea')
-        );
-        controls.forEach(control => control.disabled = true);
-        let saved = false;
-
-        try {
-          await api.api(url, {
-            method: 'PUT',
-            body: {properties}
+          <span title="Trascina per riordinare" aria-label="Trascina per riordinare">⠿</span>
+          <label>${property.key}</label>`;
+        row.addEventListener('dragstart', event => {
+          row.classList.add('dragging');
+          event.dataTransfer?.setData('text/plain', property.key);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+        });
+        row.addEventListener('dragend', () => {
+          row.classList.remove('dragging');
+          propertiesList.querySelectorAll('.property-item').forEach(item => {
+            item.classList.remove('drag-over');
           });
-          saved = true;
-          await page.home.refreshMetadata();
-          close();
-        } catch (error) {
-          status.textContent = saved
-            ? `Proprietà salvate, aggiornamento fallito: ${error.message}`
-            : `Salvataggio non riuscito: ${error.message}`;
-        } finally {
-          controls.forEach(control => control.disabled = false);
-        }
+        });
+        row.addEventListener('dragover', event => {
+          event.preventDefault();
+          if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+          row.classList.add('drag-over');
+        });
+        row.addEventListener('dragleave', event => {
+          if (!row.contains(event.relatedTarget)) row.classList.remove('drag-over');
+        });
+        row.addEventListener('drop', async event => {
+          event.preventDefault();
+          row.classList.remove('drag-over');
+          const draggedRow = propertiesList.querySelector('.property-item.dragging');
+          if (!draggedRow || draggedRow === row) {
+            console.error('Invalid drag operation');
+            return;
+          }
+          const bounds = row.getBoundingClientRect();
+          propertiesList.insertBefore(draggedRow, row);
+          const order = Array.from(
+            propertiesList.querySelectorAll('.property-item'),
+            input => input.getAttribute('data-key')
+          );
+          console.log('Reordering properties for tag', tag, 'to order', order);
+          await businessLogic.sortTagProperties(tag, order);
+        });
+        propertiesList.appendChild(row);
       };
+
+      const response = await api.api(`/api/tags/${encodeURIComponent(tagObj.category)}/${encodeURIComponent(helper.getAnonymizedTag(tag))}/properties`);
+      response.properties.forEach(addRow);
     }
   }
 };
 
 // ROUTER
+let routeGeneration = 0;
 async function router() {
+  const generation = ++routeGeneration;
   const hash = location.hash.replace(/^#/, '') || '/';
-
-  if (hash === '/' || hash === '/home') {
-    await page.home.load();
-    page.home.render();
-    window.dispatchEvent(new Event('journote-home-ready'));
-  } else if (hash === '/calendar') {
-    await page.calendar.load();
-    page.calendar.render();
-  } else if (hash === '/explorer') {
-    view.EditorWrap.dispose();
-    await view.Explorer.render();
-  } else {
-    view.EditorWrap.dispose();
-    app.innerHTML = '<p>Not found</p>';
+  try {
+    const destination = hash === '/' || hash === '/home'
+      ? page.home : hash === '/calendar' ? page.calendar : null;
+    if (destination) {
+      await destination.load();
+      if (generation !== routeGeneration) return;
+      await destination.render();
+      if (destination === page.home && generation === routeGeneration) {
+        window.dispatchEvent(new Event('journote-home-ready'));
+      }
+    } else if (hash === '/explorer') {
+      view.EditorWrap.dispose();
+      await view.Explorer.render();
+    } else {
+      view.EditorWrap.dispose();
+      eid('app').replaceChildren(view.el('p', {textContent: 'Not found'}));
+    }
+  } catch (error) {
+    if (generation !== routeGeneration) return;
+    console.error('Navigazione fallita:', error);
+    alert(`Impossibile aprire la pagina: ${error.message}`);
   }
 }
 
 // RUN
 (async () => {
-  window.addEventListener('hashchange', router);
-  window.addEventListener('keydown', ev => {
-    if (
-      ev.altKey &&
-      !ev.ctrlKey &&
-      !ev.shiftKey &&
-      ev.key.toLowerCase() === 'f'
-    ) {
-      ev.preventDefault();
-      modal.filterModal.render();
+  document.addEventListener('keydown', ev => {
+    if(ev.repeat) return;
+    console.log('Pressed key:',
+        ev.key, ' | ',
+        ev.altKey ? 'ALT ' : '', 
+        ev.ctrlKey ? 'CTRL ' : '',
+        ev.shiftKey ? 'SHIFT ' : '');
+        
+    if (ev.altKey && !ev.ctrlKey && ev.shiftKey) {
+      if (ev.key.toLowerCase() === '?') {
+        ev.preventDefault();
+        modal.shortcutsModal.render();
+      }
+    }
+      
+    if (ev.altKey && !ev.ctrlKey && !ev.shiftKey) {
+      if (ev.key.toLowerCase() === 'n') {
+        console.log('Alt+n pressed');
+        ev.preventDefault();
+        view.EditorWrap.focus();
+      }
+      if (ev.key.toLowerCase() === 't') {
+        console.log('Alt+t pressed');
+        ev.preventDefault();
+        const today = helper.localDate();
+        page.home.addTagview(today);
+      }
+      if (ev.key.toLowerCase() === 'w') {
+        console.log('Alt+w pressed');
+        ev.preventDefault();
+        page.home.removeTagview(model.get('tagsActive'));
+      }
+      if (ev.key === 'ArrowLeft') {
+        console.log('Alt+Left pressed');
+        ev.preventDefault();
+        const activeTab = model.get('tagsActive');
+        const visible = model.get('tagsVisible');
+        const currentIndex = visible.findIndex(t => t === activeTab);
+        console.log(currentIndex);
+        if (currentIndex >= 1) {
+          page.home.activateTagview(
+            model.get('tagsVisible')[currentIndex - 1]
+          );
+        }
+      }
+      if (ev.key === 'ArrowRight') {
+        console.log('Alt+Right pressed');
+        ev.preventDefault();
+        const activeTab = model.get('tagsActive');
+        const visible = model.get('tagsVisible');
+        const currentIndex = visible.findIndex(t => t === activeTab);
+        console.log(currentIndex);
+        if (currentIndex < visible.length - 1) {
+          page.home.activateTagview(
+            model.get('tagsVisible')[currentIndex + 1]
+          );
+        }
+      }
+      if (ev.key === 'm') {
+        ev.preventDefault();
+        if(view.EditorWrap.isFocused()) {
+          view.EditorWrap.toggleMaximize();
+        } else {
+          const activeTab = model.get('tagsActive');
+          if (activeTab) view.Main.toggleMaximizeTab(activeTab);
+        }
+      }
+      if (ev.key === 'b') {
+        ev.preventDefault();
+        const activeTab = model.get('tagsActive');
+        if(activeTab) {
+          document.querySelector(`.column[data-key="${CSS.escape(String(activeTab))}"] .notesList`)?.focus();
+        }
+      }
+      if (ev.key === 'l') {
+        ev.preventDefault();
+        const activeTab = model.get('tagsActive');
+        if(activeTab) {
+          document.querySelector(`.column[data-key="${CSS.escape(String(activeTab))}"]`)?.classList.toggle('showSubHeader');
+        }
+      }
+
+      if (ev.key === 'f') {
+        ev.preventDefault();
+        modal.filterModal.render();
+      }
     }
   });
+  
+  window.addEventListener('hashchange', router);
   await router();
 })();
 
-// Aggiungi questo blocco alla fine di main.js.
-// Adatta Monaco al tema Journote senza modificare la logica dell'editor.
-
-(() => {
-  const themeName = 'journote-markdown';
-
-  const readToken = (name, fallback) =>
-    getComputedStyle(document.documentElement)
-      .getPropertyValue(name)
-      .trim() || fallback;
-
-  const readColor = (name, fallback) => {
-    const value = readToken(name, fallback);
-    return /^#[\da-f]{6}$/i.test(value) ? value : fallback;
-  };
-
-  const applyTypography = editor => {
-    const rootSize =
-      parseFloat(getComputedStyle(document.documentElement).fontSize) || 14;
-    const fontSize = Math.round(rootSize * 0.95 * 100) / 100;
-
-    editor.updateOptions({
-      theme: themeName,
-      fontFamily: readToken(
-        '--font-code',
-        '"IBM Plex Mono", "Cascadia Mono", monospace'
-      ),
-      fontSize,
-      fontWeight: '400',
-      lineHeight: Math.round(fontSize * 1.5),
-      letterSpacing: 0,
-      padding: {top: 12, bottom: 12},
-
-      lineNumbers: 'on',
-      lineNumbersMinChars: 3,
-      lineDecorationsWidth: 8,
-      renderLineHighlight: 'all',
-      renderLineHighlightOnlyWhenFocus: true
-    });
-  };
-
-  journoteEditor.installStyles = function (monaco) {
-    const colors = {
-      paper: readColor('--paper', '#ffffff'),
-      paperMuted: readColor('--paper-muted', '#f6f9f7'),
-      ink: readColor('--ink', '#25332d'),
-      muted: readColor('--muted', '#68766f'),
-      border: readColor('--border', '#d8e2dc'),
-      accent: readColor('--accent', '#286b56'),
-      accentStrong: readColor('--accent-strong', '#1b5744'),
-      accentSoft: readColor('--accent-soft', '#e1eee7'),
-      error: readColor('--c-error', '#d34e4e'),
-      project: readColor('--c-project', '#286b56'),
-      event: readColor('--c-event', '#366f91'),
-      generic: readColor('--c-generic', '#a7503b'),
-      person: readColor('--c-person', '#886414')
-    };
-
-    monaco.editor.defineTheme(themeName, {
-      base: 'vs',
-      inherit: true,
-      rules: [
-        {
-          token: '',
-          foreground: colors.ink.slice(1)
-        },
-        {
-          token: 'keyword',
-          foreground: colors.accentStrong.slice(1),
-          fontStyle: 'bold'
-        },
-        {
-          token: 'strong',
-          foreground: colors.ink.slice(1),
-          fontStyle: 'bold'
-        },
-        {
-          token: 'emphasis',
-          foreground: colors.ink.slice(1),
-          fontStyle: 'italic'
-        },
-        {
-          token: 'string',
-          foreground: colors.generic.slice(1)
-        },
-        {
-          token: 'string.link',
-          foreground: colors.event.slice(1)
-        },
-        {
-          token: 'variable',
-          foreground: colors.event.slice(1)
-        },
-        {
-          token: 'comment',
-          foreground: colors.muted.slice(1)
-        },
-        {
-          token: 'tag',
-          foreground: colors.accent.slice(1)
-        }
-      ],
-      colors: {
-        'editor.background': colors.paper,
-        'editor.foreground': colors.ink,
-        'editorCursor.foreground': colors.accentStrong,
-
-        'editor.selectionBackground': '#c9dfd2',
-        'editor.inactiveSelectionBackground': colors.accentSoft,
-        'editor.selectionHighlightBackground': '#e1eee780',
-        'editor.selectionHighlightBorder': '#a5c6b4',
-
-        'editor.wordHighlightBackground': '#e1eee780',
-        'editor.wordHighlightStrongBackground': '#c9dfd280',
-        'editor.findMatchBackground': '#ead8a3',
-        'editor.findMatchHighlightBackground': '#f8f0d9',
-        'editor.findMatchBorder': '#bd8b22',
-
-        'editor.lineHighlightBackground': colors.paperMuted,
-        'editorLineNumber.foreground': colors.muted,
-        'editorLineNumber.activeForeground': colors.accentStrong,
-        'editorGutter.background': colors.paper,
-        'editorWhitespace.foreground': '#c5d2ca',
-        'editorIndentGuide.background1': '#edf1ee',
-        'editorIndentGuide.activeBackground1': '#a5c6b4',
-
-        'editorBracketMatch.background': colors.accentSoft,
-        'editorBracketMatch.border': '#a5c6b4',
-        'editorLink.activeForeground': colors.event,
-        'editorError.foreground': colors.error,
-
-        'editorWidget.background': colors.paperMuted,
-        'editorWidget.foreground': colors.ink,
-        'editorWidget.border': colors.border,
-        'editorHoverWidget.background': colors.paper,
-        'editorHoverWidget.foreground': colors.ink,
-        'editorHoverWidget.border': colors.border,
-
-        'input.background': colors.paper,
-        'input.foreground': colors.ink,
-        'input.border': colors.border,
-        'input.placeholderForeground': colors.muted,
-        'inputOption.activeBackground': colors.accentSoft,
-        'inputOption.activeForeground': colors.accentStrong,
-        'inputOption.activeBorder': '#a5c6b4',
-
-        'list.activeSelectionBackground': colors.accentSoft,
-        'list.activeSelectionForeground': colors.accentStrong,
-        'list.focusBackground': colors.accentSoft,
-        'list.focusForeground': colors.accentStrong,
-        'list.hoverBackground': colors.paperMuted,
-        'list.hoverForeground': colors.ink,
-
-        'menu.background': colors.paper,
-        'menu.foreground': colors.ink,
-        'menu.border': colors.border,
-        'menu.selectionBackground': colors.accentSoft,
-        'menu.selectionForeground': colors.accentStrong,
-        'menu.separatorBackground': colors.border,
-
-        'scrollbarSlider.background': '#bccbc280',
-        'scrollbarSlider.hoverBackground': '#a5b9adc0',
-        'scrollbarSlider.activeBackground': '#86ad96',
-        'scrollbar.shadow': '#00000000',
-
-        'focusBorder': '#86ad96',
-        'widget.shadow': '#223e2f18'
-      }
-    });
-  };
-
-  const originalAdapter = journoteEditor.adapter;
-
-  journoteEditor.adapter = function (editor, host, monaco) {
-    applyTypography(editor);
-
-    if (document.fonts?.ready) {
-      document.fonts.ready.then(() => {
-        if (host.isConnected) {
-          monaco.editor.remeasureFonts();
-        }
-      });
-    }
-
-    return originalAdapter.call(this, editor, host, monaco);
-  };
-
-  // Applica il tema anche se Monaco è già stato inizializzato.
-  if (window.monaco?.editor) {
-    journoteEditor.installStyles(window.monaco);
-
-    const editor = view.EditorWrap.monacoEditor;
-    if (editor) {
-      applyTypography(editor);
-      view.EditorWrap.resizeEditor();
-    }
-  }
-})();
-
-// Append this block at the end of main.js, after the theme customization.
-//
-// Type #, @, > or + to suggest existing tags.
-// Arrow keys: navigate. Enter / Tab: insert. Escape: dismiss.
-// Ctrl+Space: reopen suggestions while editing a tag.
-
-(() => {
-  if (journoteEditor.tagAutocompleteInstalled) return;
-  journoteEditor.tagAutocompleteInstalled = true;
-
-  const attachedEditors = new WeakSet();
-
-  function attachAutocomplete(editor, monaco) {
-    if (attachedEditors.has(editor)) return;
-    attachedEditors.add(editor);
-
-    editor.updateOptions({
-      suggestOnTriggerCharacters: true,
-      quickSuggestions: {
-        other: true,
-        comments: true,
-        strings: true
-      },
-      quickSuggestionsDelay: 100,
-      wordBasedSuggestions: 'off',
-      acceptSuggestionOnEnter: 'on',
-      acceptSuggestionOnCommitCharacter: false,
-      tabCompletion: 'off',
-      snippetSuggestions: 'none',
-      suggest: {
-        insertMode: 'replace',
-        showWords: false,
-        showSnippets: false,
-        preview: false,
-        selectionMode: 'always'
-      }
-    });
-
-    const categories = {
-      '#': {
-        label: 'Progetto',
-        kind: monaco.languages.CompletionItemKind.Folder
-      },
-      '@': {
-        label: 'Persona',
-        kind: monaco.languages.CompletionItemKind.User
-      },
-      '>': {
-        label: 'Evento',
-        kind: monaco.languages.CompletionItemKind.Event
-      },
-      '+': {
-        label: 'Tag generico',
-        kind: monaco.languages.CompletionItemKind.Keyword
-      }
-    };
-
-    const provider = monaco.languages.registerCompletionItemProvider(
-      'markdown',
-      {
-        triggerCharacters: ['#', '@', '>', '+'],
-
-        provideCompletionItems(textModel, position, context, cancellation) {
-          // Restrict this provider to this Journote editor.
-          if (
-            cancellation.isCancellationRequested ||
-            textModel !== editor.getModel()
-          ) {
-            return {suggestions: []};
-          }
-
-          const line = textModel.getLineContent(position.lineNumber);
-          const beforeCursor = line.slice(0, position.column - 1);
-
-          // Match only a tag at the start of a line or after whitespace.
-          // Markdown headings ("# Title"), quotes ("> text"), lists ("+ item"),
-          // email addresses and property references do not match.
-          const match = beforeCursor.match(
-            /(?:^|\s)([#@+>][A-Za-z0-9_.-]*)$/
-          );
-
-          if (!match) return {suggestions: []};
-
-          const typedTag = match[1];
-          const prefix = typedTag[0];
-          const query = typedTag.toLowerCase();
-          const category = categories[prefix];
-
-          // Replace the complete tag even when the cursor is in its middle.
-          // Leave surrounding punctuation, whitespace and [property] intact.
-          const suffix = line
-            .slice(position.column - 1)
-            .match(/^[A-Za-z0-9_.-]*/)[0];
-
-          const range = new monaco.Range(
-            position.lineNumber,
-            position.column - typedTag.length,
-            position.lineNumber,
-            position.column + suffix.length
-          );
-
-          // Read the current application model on every request.
-          // Metadata refreshes therefore become available automatically.
-          const tags = model.get('tags') || [];
-          const seen = new Set();
-          const suggestions = [];
-
-          for (const tag of tags) {
-            const name = tag?.name;
-
-            if (
-              typeof name !== 'string' ||
-              name[0] !== prefix ||
-              !/^[#@+>][A-Za-z0-9_.-]+$/.test(name) ||
-              !name.toLowerCase().startsWith(query) ||
-              seen.has(name)
-            ) {
-              continue;
-            }
-
-            seen.add(name);
-
-            const details = [category.label];
-            if (tag.parent) details.push(`Parent: ${tag.parent}`);
-
-            suggestions.push({
-              label: {
-                label: name,
-                description: category.label
-              },
-              kind: category.kind,
-              detail: details.join(' · '),
-              filterText: name,
-              sortText: name.toLowerCase(),
-              insertText: name,
-              range
-            });
-          }
-
-          return {
-            suggestions,
-            incomplete: true
-          };
-        }
-      }
-    );
-
-    // Remove the provider when navigating away or recreating the editor.
-    const disposeListener = editor.onDidDispose(() => {
-      provider.dispose();
-      disposeListener.dispose();
-    });
-  }
-
-  // Preserve the existing adapter and any previously installed theme hooks.
-  const originalAdapter = journoteEditor.adapter;
-
-  journoteEditor.adapter = function (editor, host, monaco) {
-    const adapter = originalAdapter.call(this, editor, host, monaco);
-    attachAutocomplete(editor, monaco);
-    return adapter;
-  };
-
-  // Also support an editor that is already running.
-  if (window.monaco?.editor && view.EditorWrap.monacoEditor) {
-    attachAutocomplete(view.EditorWrap.monacoEditor, window.monaco);
-  }
-})();

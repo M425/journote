@@ -345,7 +345,7 @@ def api_get_tagged_notes(category, anonTag):
             datetime.strptime(anonTag, "%Y-%m-%d")
         except ValueError:
             return jsonify({"error": "Invalid date format, expected YYYY-MM-DD"}), 400
-        return jsonify(STORE.select_notes("date = ?", (anonTag,)))
+        return jsonify({"notes": STORE.select_notes("date = ?", (anonTag,)), "events": []})
     if category not in CATEGORIES:
         return jsonify({"error": "Invalid category"}), 400
     tag = CATEGORIES[category] + anonTag
@@ -357,7 +357,13 @@ def api_get_tagged_notes(category, anonTag):
         f"WHERE filter_tags.note_id = n.id AND filter_tags.tag_name IN ({placeholders}))",
         tuple(tag_names),
     )
-    return jsonify(notes)
+    events = []
+    for child in children:
+        print(f"Checking child tag: {child}")
+        child_obj = STORE.get_tag(child)
+        if child_obj and child_obj['category'] == "Events":
+            events.append(child_obj)
+    return jsonify({"notes": notes, "events": events})
 
 @app.route("/api/notes/<note_id>", methods=["GET"])
 def api_get_note(note_id):
@@ -371,12 +377,6 @@ def api_add_note():
     data = require_json()
     if not isinstance(data.get("text"), str) or not data["text"].strip():
         return json_error(400, "text must be a non-empty string")
-    assignments = parse_tag_property_syntax(data["text"])
-    if assignments:
-        tag, key, value = assignments[0]
-        STORE.set_tag_properties(tag, [{"key": key, "value": value}], replace=False)
-        return jsonify({"status": "property_saved", "kind": "tag_property", "note": None,
-                        "tag": tag, "properties": STORE.get_tag_properties(tag)})
     tags = find_tag_in_text(data["text"])
     priority, duedate, cleaned_text = extract_task_priority(data["text"])
     parent_id, cleaned_text = extract_reply_reference(cleaned_text)
@@ -402,7 +402,13 @@ def api_add_note():
     # Process regular tags
     for tag in tags:
         if STORE.get_tag(tag) is None:
-            STORE.add_tag({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None})
+            STORE.add_tag({
+                "name": tag,
+                "category": categorize_tag(tag),
+                "treed": False,
+                "parent": None,
+                "date": data.get("date") or None
+            })
     return jsonify({"status": "created", "note": note}), 201
 
 @app.route("/api/notes/<note_id>", methods=["DELETE"])
@@ -452,7 +458,7 @@ def api_patch_note(note_id):
     any_new_tag = []
     for tag in added_tags:
         if STORE.get_tag(tag) is None:
-            any_new_tag.append(STORE.add_tag({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None}))
+            any_new_tag.append(STORE.add_tag({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None, "date": data.get("date") or None}))
     any_removed_tag = []
     for tag in removed_tags:
         if not STORE.select_notes(
@@ -514,6 +520,8 @@ def api_patch_tag_tree(category, anonTag):
         patch_data['parent'] = data['parent']
     if 'content' in data:
         patch_data['content'] = data['content']
+    if 'date' in data:
+        patch_data['date'] = data['date']
     if 'properties' in data:
         return json_error(400, 'Use the /properties endpoint to edit properties')
     if 'rename' in data:
@@ -564,7 +572,19 @@ def api_set_tag_properties(category, anonTag):
     tag = property_tag(category, anonTag)
     data = require_json()
     try:
-        STORE.set_tag_properties(tag, data.get("properties"), replace=request.method != "PATCH")
+        STORE.set_tag_property(tag, data.get("key"), data.get("value"))
+    except ValueError as error:
+        return json_error(400, str(error))
+    return jsonify({"success": True, "status": "property_saved", "kind": "tag_property",
+                    "note": None, "tag": tag, "properties": STORE.get_tag_properties(tag)})
+
+@app.route("/api/tags/<category>/<anonTag>/properties/order", methods=["PUT"])
+def api_set_tag_properties_order(category, anonTag):
+    """PATCH merges keys. POST/PUT replace the complete collection."""
+    tag = property_tag(category, anonTag)
+    data = require_json()
+    try:
+        STORE.set_tag_property_sort(tag, data.get("order"))
     except ValueError as error:
         return json_error(400, str(error))
     return jsonify({"success": True, "status": "property_saved", "kind": "tag_property",
