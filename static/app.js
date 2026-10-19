@@ -1,71 +1,60 @@
-const eid = el => document.getElementById(el);
+/*
+ * STRUTTURA E FLUSSO DELL'APPLICAZIONE
+ *
+ * router(): legge l'hash dell'URL e apre la pagina richiesta.
+ * Per home e calendario esegue load() prima di render(); un contatore
+ * impedisce alle navigazioni superate di proseguire con il rendering.
+ *
+ * page: coordina le pagine e le operazioni sulle schede.
+ * Carica i dati, prepara la struttura principale e richiama le view.
+ * page.home gestisce anche schede aperte, filtri e refresh dei metadati.
+ *
+ * model: conserva lo stato condiviso (tag, task, schede e visibilità).
+ * get() legge un valore; set() lo aggiorna e richiama le view in subs.
+ * I metodi reload() caricano i dati senza notificare automaticamente le view.
+ *
+ * api: centralizza le richieste HTTP, la serializzazione JSON
+ * e la gestione degli errori restituiti dal server.
+ *
+ * businessLogic: raccoglie le operazioni applicative, come salvare note,
+ * modificare proprietà, costruire l'albero dei tag e gestire le azioni
+ * richieste. Usa api e helper senza costruire direttamente il DOM.
+ *
+ * view: costruisce e aggiorna l'interfaccia e collega gli eventi alle azioni.
+ * el() crea elementi DOM; mount() recupera e svuota il contenitore.
+ * I componenti gestiscono editor, schede, sidebar, calendari ed explorer.
+ *
+ * modal: gestisce finestre sovrapposte per modifica, filtri, immagini
+ * e scorciatoie. Richiama le operazioni applicative e aggiorna le viste.
+ *
+ * helper: contiene funzioni di supporto per tag, categorie e date.
+ *
+ * Flusso tipico: evento UI → page/businessLogic → api → aggiornamento
+ * dello stato → aggiornamento delle view. Alcuni handler chiamano api
+ * direttamente; il rendering avviene tramite subs o richiami espliciti.
+ */
 
-const escapeHTML = value => String(value ?? '').replace(
-  /[&<>"']/g,
-  character => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  }[character])
-);
-
-const renderMarkdown = text => {
-  if (!text) return '';
-  const converter = new showdown.Converter({
-    tables: true,
-    simplifiedAutoLink: true,
-    strikethrough: true,
-    taskOptions: true,
-    ghCodeBlocks: true,
-    backslashEscapesHTMLTags: true,
-    encodeEmails: true,
-    openLinksInNewWindow: true,
-    excludeTrailingPunctuationFromURLs: true,
-    smartIndentationFix: true,
-    simpleLineBreaks: true
-  });
-
-  const processedText = escapeHTML(text).replace(
-    /#([A-Za-z0-9_.-]+)\[([^\]]+)\]/g,
-    (match, tagName, key) => {
-      const tag = (model.get('tags') || []).find(
-        t => t.name === `#${tagName}`
-      );
-      if (tag && Array.isArray(tag.properties)) {
-        const propertyValue = tag.properties.find(
-          property => property.key === key
-        )?.value;
-        if (propertyValue !== undefined) {
-          return `<span class="tag-property-reference">${escapeHTML(propertyValue)}</span>`;
-        }
+//#region HELPER
+const h = {
+  eid(el) {
+    return document.getElementById(el);
+  },
+  sanitizeRenderedMarkdown(root) {
+    // URL policy only: this is not a complete HTML sanitizer.
+    // For untrusted Markdown, sanitize converter output with DOMPurify before DOM insertion.
+    for (const element of root.querySelectorAll('a[href], img[src]')) {
+      const attribute = element.tagName === 'IMG' ? 'src' : 'href';
+      try {
+        const url = new URL(element.getAttribute(attribute), location.href);
+        const allowed = element.tagName === 'IMG'
+          ? ['http:', 'https:']
+          : ['http:', 'https:', 'mailto:'];
+        if (!allowed.includes(url.protocol)) element.removeAttribute(attribute);
+      } catch {
+        element.removeAttribute(attribute);
       }
-      return match;
     }
-  );
-  return converter.makeHtml(processedText);
-};
-
-// URL policy only: this is not a complete HTML sanitizer.
-// For untrusted Markdown, sanitize converter output with DOMPurify before DOM insertion.
-const sanitizeRenderedMarkdown = root => {
-  for (const element of root.querySelectorAll('a[href], img[src]')) {
-    const attribute = element.tagName === 'IMG' ? 'src' : 'href';
-    try {
-      const url = new URL(element.getAttribute(attribute), location.href);
-      const allowed = element.tagName === 'IMG'
-        ? ['http:', 'https:']
-        : ['http:', 'https:', 'mailto:'];
-      if (!allowed.includes(url.protocol)) element.removeAttribute(attribute);
-    } catch {
-      element.removeAttribute(attribute);
-    }
-  }
-};
-
-// HELPER
-const helper = {
+  },
   getClassfromTag(tag) {
     if (tag.startsWith('#')) return 'Projects';
     if (tag.startsWith('@')) return 'Persons';
@@ -98,10 +87,21 @@ const helper = {
     const start = Date.UTC(date1.getUTCFullYear(), date1.getUTCMonth(), date1.getUTCDate());
     const end = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate());
     return Math.round((end - start) / 86400000);
+  },
+  escapeHTML(value) {
+    return String(value ?? '').replace(
+      /[&<>"']/g,
+      character => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+        }[character]));
   }
-};
+}
 
-// API
+//#region API
 const api = {
   async api(url, opts = {}) {
     console.log('[fn] api ' + url);
@@ -125,38 +125,168 @@ const api = {
     }
     return null;
   },
-  async loadNotes(tag) {
-    console.log('[fn] loadNotes', tag);
-    const category = helper.getClassfromTag(tag);
-    const anonTag = helper.getAnonymizedTag(tag);
-    const resp = await api.api(`/api/notes/${encodeURIComponent(category)}/${encodeURIComponent(anonTag)}`);
-    return resp;
+  tagPath(tag) {
+    // Accetta un nome completo, come "#progetto", oppure un oggetto tag.
+    const name = typeof tag === 'string' ? tag : tag.name;
+    const category = typeof tag === 'string'
+      ? h.getClassfromTag(name)
+      : tag.category ?? h.getClassfromTag(name);
+
+    return [
+      encodeURIComponent(category),
+      encodeURIComponent(h.getAnonymizedTag(name))
+    ].join('/');
+  },
+
+  // NOTE
+
+  loadNotes(tag) {
+    return api.api(`/api/notes/${api.tagPath(tag)}`);
+  },
+
+  getNote(id) {
+    return api.api(`/api/notes/${encodeURIComponent(id)}`);
+  },
+
+  async createNote(text, date) {
+    const response = await api.api('/api/notes', {
+      method: 'POST',
+      body: {text, date}
+    });
+    if (!response?.note?.id && response?.kind !== 'tag_property') { throw new Error('Error saving note'); }
+    return response;
+  },
+
+  async updateNote({id, text, date}) {
+    const response = await api.api(`/api/notes/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: {text, date} }
+    );
+    if (!response?.note?.id) { throw new Error('Error saving note'); }
+    return response.note;
+  },
+
+  deleteNote(id) {
+    return api.api(`/api/notes/${encodeURIComponent(id)}`,
+    { method: 'DELETE' });
+  },
+
+  filterNotes(rule) {
+    return api.api('/api/notes/filter',
+      { method: 'POST', body: {rule} });
+  },
+
+  getMonthlyNoteCounts(year, month) {
+    // month: numero del mese da 1 a 12.
+    const monthString = String(month).padStart(2, '0');
+    return api.api(
+      `/api/notes/${encodeURIComponent(year)}/${encodeURIComponent(monthString)}/count`
+    );
+  },
+
+  // TAG
+
+  getTags() {
+    return api.api('/api/tags');
+  },
+
+  updateTag(tag, changes) {
+    return api.api(`/api/tags/${api.tagPath(tag)}`, {
+      method: 'PATCH',
+      body: changes
+    });
+  },
+
+  updateTagDate(tag, date) {
+    return api.updateTag(tag, {date});
+  },
+
+  updateTagVisibility(tag, treed) {
+    return api.updateTag(tag, {
+      treed,
+      parent: tag.parent || '',
+      content: tag.content || ''
+    });
+  },
+
+  // PROPRIETÀ DEI TAG
+
+  getTagProperties(tag) {
+    return api.api(`/api/tags/${api.tagPath(tag)}/properties`);
+  },
+
+  setTagProperty(tag, key, value) {
+    return api.api(`/api/tags/${api.tagPath(tag)}/properties`, {
+      method: 'PATCH',
+      body: {key, value}
+    });
+  },
+
+  sortTagProperties(tag, order) {
+    return api.api(
+      `/api/tags/${api.tagPath(tag)}/properties/order`,
+      {
+        method: 'PUT',
+        body: {order}
+      }
+    );
+  },
+
+  // TASK
+
+  getTasks() {
+    return api.api('/api/tasks');
+  },
+
+  // IMMAGINI
+
+  uploadImage(formData) {
+    return api.api('/api/images', {
+      method: 'POST',
+      body: formData
+    });
+  },
+
+  // EXPLORER
+
+  getExplorerTables() {
+    return api.api('/api/explorer/tables');
+  },
+
+  runExplorerQuery(query) {
+    return api.api('/api/explorer/query', {
+      method: 'POST',
+      body: {query}
+    });
   }
 };
+//#endregion
 
-// MODEL
+//#region MODEL
 const model = {
-  set(el, val) {
-    console.debug('model set "' + el + '"', val);
-    if (typeof val == 'function') {
-      this[el]._v = val(this[el]._v);
+  set(key, valueOrUpdater) {
+    const state = this[key];
+    console.debug(`model set "${key}"`, valueOrUpdater);
+    if (typeof valueOrUpdater === 'function') {
+      state._v = valueOrUpdater(state._v);
     } else {
-      this[el]._v = val;
+      state._v = valueOrUpdater;
     }
-    for (const sub of this[el].subs) {
-      view[sub].render();
+    for (const viewName of state.subs) {
+      view[viewName].render();
     }
-    return this[el]._v;
+    return state._v;
   },
-  get(el) {
-    console.debug('model get: ' + el, this[el]._v);
-    return this[el]._v;
+
+  get(key) {
+    const value = this[key]._v;
+    console.debug(`model get "${key}"`, value);
+    return value;
   },
   tags: {
     _v: null,
     subs: ['TagsBoxList'],
     async reload() {
-      this._v = await api.api('/api/tags');
+      this._v = await api.getTags();
       this._v.sort((a, b) => {
         const nameA = a.name.toUpperCase();
         const nameB = b.name.toUpperCase();
@@ -170,7 +300,7 @@ const model = {
     _v: null,
     subs: ['TagsBoxList', 'Calendar'],
     async reload() {
-      this._v = await api.api('/api/tasks');
+      this._v = await api.getTasks();
       const tags = new Map((model.get('tags') || []).map(tag => [tag.name, tag]));
       for (const task of this._v) {
         // Preserve the previous rule: the last eligible tag wins.
@@ -192,96 +322,90 @@ const model = {
   tagsActive: {_v: null, subs: []},
   leftBarVisible: {_v: true, subs: ['LeftBar']}
 };
+//#endregion
 
-// BUSINESS LOGIC LAYER
+//#region BUSINESS-LOGIC
 const businessLogic = {
-
-  async saveNote(raw, tdate) {
-    if (!raw.trim()) return null;
-    const assignment = raw.trim().match(
+  async reloadMetadata() {
+    // Il calcolo di firstTag nei task dipende dai tag aggiornati.
+    await model.tags.reload();
+    await model.tasks.reload();
+  },
+  parsePropertyAssignment(text) {
+    const match = text.trim().match(
       /^(#[A-Za-z0-9_.-]+)\[([^\[\]\r\n]+)\][ \t\r\n]+(\S[\s\S]*)$/
     );
-    if (assignment && assignment[2].trim()) {
-      return api.api(
-        `/api/tags/Projects/${encodeURIComponent(assignment[1].slice(1))}/properties`,
-        {
-          method: 'PATCH',
-          body: {
-            key: assignment[2].trim(),
-            value: assignment[3].trim()
-          }
-        }
+    if (!match) return null;
+    const [, tagName, rawKey, rawValue] = match;
+    const key = rawKey.trim();
+    if (!key) return null;
+    return {
+      tagName,
+      key,
+      value: rawValue.trim()
+    };
+  },
+
+  async saveNote(text, date) {
+    if (!text.trim()) return null;
+    const property = businessLogic.parsePropertyAssignment(text);
+    if (property) {
+      return api.setTagProperty(
+        property.tagName,
+        property.key,
+        property.value
       );
     }
-    const response = await api.api('/api/notes', {
-      method: 'POST',
-      body: {
-        text: raw,
-        date: tdate || helper.localDate()
-      }
-    });
-    console.log(response);
-    if (!response?.note?.id && response?.kind !== 'tag_property') {
-      throw new Error('Error saving note');
-    }
-    return response;
+    return api.createNote(text, date || h.localDate());
   },
 
   async sortTagProperties(tag, order) {
-    return api.api(
-      `/api/tags/${encodeURIComponent(this.getTagCategory(tag))}/${encodeURIComponent(this.getAnonymizedTag(tag))}/properties/order`,
-      {
-        method: 'PUT',
-        body: {
-          order
-        }
-      }
-    );
+    return api.sortTagProperties(tag, order);
   },
 
-  async editNote(note) {
-    const response = await api.api(`/api/notes/${note.id}`, {
-      method: 'PATCH',
-      body: {
-        text: note.text,
-        date: note.date
-      }
-    });
-    if (!response?.note?.id) throw new Error('Error saving note');
-    return response.note;
-  },
-
-  getTagCategory(tag) {
-    return helper.getClassfromTag(tag);
-  },
-
-  getAnonymizedTag(tag) {
-    return helper.getAnonymizedTag(tag);
-  },
-
-  getTaskPriority(task) {
-    if (!task || !task.task) return 'low';
-    return task.task;
+  editNote(note) {
+    return api.updateNote(note);
   },
 
   buildTagTree(tags = [], tasks = []) {
-    const nodes = new Map(tags.map(tag => [tag.name, {...tag, tasks: [], children: []}]));
-    const tree = [];
-    for (const node of nodes.values()) {
-      const seen = new Set([node.name]);
-      let ancestor = nodes.get(node.parent);
-      let cyclic = false;
+    // 1. Crea nodi indipendenti dagli oggetti tag originali.
+    const nodesByName = new Map(
+      tags.map(tag => [
+        tag.name,
+        {
+          ...tag,
+          tasks: [],
+          children: []
+        }
+      ])
+    );
+    const roots = [];
+    // 2. Collega i nodi ai genitori, evitando collegamenti ciclici.
+    for (const node of nodesByName.values()) {
+      const visitedNames = new Set([node.name]);
+      let ancestor = nodesByName.get(node.parent);
+      let hasCycle = false;
       while (ancestor) {
-        if (seen.has(ancestor.name)) { cyclic = true; break; }
-        seen.add(ancestor.name);
-        ancestor = nodes.get(ancestor.parent);
+        if (visitedNames.has(ancestor.name)) {
+          hasCycle = true;
+          break;
+        }
+        visitedNames.add(ancestor.name);
+        ancestor = nodesByName.get(ancestor.parent);
       }
-      const parent = nodes.get(node.parent);
-      if (parent && !cyclic) parent.children.push(node);
-      else tree.push(node);
+      const parent = nodesByName.get(node.parent);
+      if (parent && !hasCycle) {
+        parent.children.push(node);
+      } else {
+        roots.push(node);
+      }
     }
-    for (const task of tasks) nodes.get(task.firstTag)?.tasks.push(task);
-    return tree;
+    // 3. Associa ogni task al tag selezionato durante il caricamento.
+    for (const task of tasks) {
+      const node = nodesByName.get(task.firstTag);
+      node?.tasks.push(task);
+    }
+    return roots;
   },
 
   getCalendarDays(year, month) {
@@ -295,7 +419,7 @@ const businessLogic = {
 
   getNewTags(text, existingTags = model.get('tags') || []) {
     const existingTagNames = new Set(existingTags.map(tag => tag.name));
-    return helper.extractTagsFromText(text, false).filter(
+    return h.extractTagsFromText(text, false).filter(
       tag => !existingTagNames.has(tag)
     );
   },
@@ -329,18 +453,11 @@ const businessLogic = {
     );
   },
 
-  async updateTagDate(tag, newDate) {
-    const anonTag = this.getAnonymizedTag(tag.name);
-    const category = this.getTagCategory(tag.name);
-    console.log('[fn] updateTagDate', tag, newDate);
-    await api.api(`/api/tags/${category}/${anonTag}`, {
-      method: 'patch',
-      body: { date: newDate }
-    });
-  }
+  updateTagDate(tag, newDate) { return api.updateTagDate(tag, newDate); }
 };
+//#endregion
 
-// PAGES
+//#region PAGE
 const page = {
   renderShell(component, mainId) {
     view.EditorWrap.dispose();
@@ -352,55 +469,53 @@ const page = {
   home: {
     filterViews: {},
     pendingTabs: new Map(),
-    shortcutsBound: false,
     async render() {
       const visible = [...model.get('tagsVisible')];
       this.pendingTabs = new Map();
       page.renderShell(this, 'Main');
       view.Main.render();
-      const root = eid('Main');
+      const root = h.eid('Main');
       model.set('tagsVisible', []);
       model.set('tagsActive', null);
 
-      for (const key of new Set([helper.localDate(), ...visible])) {
-        if (eid('Main') !== root) return;
+      for (const key of new Set([h.localDate(), ...visible])) {
+        if (h.eid('Main') !== root) return;
         try {
-          if (this.filterViews[key]) await this.addFilterview(this.filterViews[key], null, key);
-          else await this.addTagview(key);
+          const filterRule = this.filterViews[key];
+          if (filterRule) {
+            await this.addFilterview(filterRule, null, key);
+          } else {
+            await this.addTagview(key);
+          }
         } catch (error) {
-          if (eid('Main') === root) console.error('Impossibile aprire la scheda:', key, error);
+          if (h.eid('Main') === root) console.error('Impossibile aprire la scheda:', key, error);
         }
       }
       return root;
     },
 
     async load() {
-      await model.tags.reload();
-      await model.tasks.reload();
+      await businessLogic.reloadMetadata();
     },
 
     async refreshMetadata() {
-      await model.tags.reload();
-      await model.tasks.reload();
+      await businessLogic.reloadMetadata();
       view.TagsBoxList.render();
       view.Main.refreshTagDetails();
       view.Calendar.render();
       await view.JournalBox.render();
       for (const [key, rule] of Object.entries(this.filterViews)) {
         if (!model.get('tagsVisible').includes(key)) continue;
-        const notes = await api.api('/api/notes/filter', {
-          method: 'POST',
-          body: {rule}
-        });
-        if (eid('Main') && model.get('tagsVisible').includes(key)) view.Main.updateTab(key, notes);
+        const notes = await api.filterNotes(rule);
+        if (h.eid('Main') && model.get('tagsVisible').includes(key)) view.Main.updateTab(key, notes);
       }
     },
 
     async ensureHome() {
-      if (eid('Main')) return;
+      if (h.eid('Main')) return;
       history.pushState(null, '', '#/home');
       await router();
-      if (!eid('Main')) throw new Error('Navigazione alla home interrotta');
+      if (!h.eid('Main')) throw new Error('Navigazione alla home interrotta');
     },
 
     async openTab(key, load, label = key) {
@@ -411,19 +526,41 @@ const page = {
       }
       const pending = this.pendingTabs;
       if (pending.has(key)) return pending.get(key);
-      const root = eid('Main');
+      const root = h.eid('Main');
+      view.EditorWrap.addStatus(
+        `Apertura scheda: ${label}`,
+        'loading'
+      );
       const request = (async () => {
         const resp = await load();
         const notes = resp.notes || [];
         const events = resp.events || [];
-        if (root !== eid('Main') || this.pendingTabs !== pending || pending.get(key) !== request) return;
+        if (root !== h.eid('Main') || this.pendingTabs !== pending || pending.get(key) !== request) return;
         model.set('tagsVisible', visible => [...visible, key]);
         view.TopBar.addTab(key, notes, label);
         view.Main.addTab(key, notes, events, label);
+        view.EditorWrap.addStatus(
+          `Scheda aperta: ${label}`,
+          'success'
+        );
       })();
       pending.set(key, request);
-      try { return await request; }
-      finally { if (pending.get(key) === request) pending.delete(key); }
+      try {
+        return await request;
+      } catch (error) {
+        if (root === eid('Main') && this.pendingTabs === pending) {
+          view.EditorWrap.addStatus(
+            `Apertura di ${label} non riuscita: ${error.message}`,
+            'error'
+          );
+        }
+
+        throw error;
+      } finally {
+        if (pending.get(key) === request) {
+          pending.delete(key);
+        }
+      }
     },
 
     async addTagview(tag) {
@@ -455,9 +592,11 @@ const page = {
     async addFilterview(rule, notes = null, key = null) {
       const filterKey = key || `filter-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       this.filterViews[filterKey] = rule;
-      return this.openTab(filterKey, () => notes ?? api.api('/api/notes/filter', {
-        method: 'POST', body: {rule}
-      }), `Filtro: ${rule}`);
+      return this.openTab(
+        filterKey,
+        () => notes ?? api.filterNotes(rule),
+        `Filtro: ${rule}`
+      );
     },
 
     activateTagview(key) {
@@ -472,7 +611,7 @@ const page = {
 
     removeTagview(tag) {
       console.log('[fn] removeTagview', tag);
-      if (helper.localDate() == tag) {
+      if (h.localDate() == tag) {
         console.log('[fn] removeTagview - dont remove today', tag);
         return;
       }
@@ -498,13 +637,13 @@ const page = {
       view.Calendar.render();
     },
     async load() {
-      await model.tags.reload();
-      await model.tasks.reload();
+      await businessLogic.reloadMetadata();
     }
   }
 };
+//#endregion
 
-// VIEW
+//#region VIEW
 const view = {
   el(type, options = {}, children = []) {
     const element = document.createElement(type);
@@ -538,7 +677,7 @@ const view = {
 
   // render(): acquire root, clear it, build children, render child views.
   mount(component, id) {
-    component.el = eid(id);
+    component.el = h.eid(id);
     if (!component.el) return null;
     component.el.replaceChildren();
     return component.el;
@@ -584,57 +723,61 @@ const view = {
           className: 'editor-area',
           placeholder: 'Scrivi una nota in Markdown...',
           rows: 5,
-          spellcheck: false
+          spellcheck: false,
+          'aria-label': 'Testo della nota in Markdown'
         })
       );
-      this.ed.setAttribute('aria-label', 'Testo della nota in Markdown');
 
       this.status = this.editorField.appendChild(
         view.el('div', {
           id: 'EditorStatus',
-          className: 'editor-status'
+          className: 'editor-status-history',
+          role: 'log',
+          'aria-label': 'Cronologia aggiornamenti editor',
+          'aria-live': 'polite',
+          'aria-relevant': 'additions',
+          'aria-atomic': 'false',
+          tabindex: 0
         })
       );
-      this.status.setAttribute('aria-live', 'polite');
       this.pendingImageUploads = 0;
 
       const EditorCtrl = this.el.appendChild(
-        view.el('div', {id: 'EditorCtrl'})
+        view.el('div', {id: 'EditorCtrl'}, [
+          view.el('button', {
+            id: 'EditorSaveBtn', className: 'btn primary',
+            textContent: 'Save',
+            onclick: async (ev) => {
+              if (this.pendingImageUploads) return;
+              await this.saveNote();
+            }
+          }),
+          view.el('button', {
+            id: 'EditorMaximizeBtn', className: 'btn secondary',
+            textContent: 'Maximize',
+            'aria-label': 'Maximize editor',
+            onclick: ev => {
+              this.toggleMaximize();
+            }
+          }),
+          view.el('button', {
+            id: 'EditorUpdateBtn', className: 'btn primary',
+            textContent: 'Update', style: 'display:none;',
+            onclick: async ev => {
+              if (this.pendingImageUploads) return;
+              this.editNote();
+            }
+          }),
+          view.el('button', {
+            id: 'EditorClearBtn', className: 'btn info',
+            textContent: 'Clear', style: 'display:none;',
+            onclick: ev => {
+              this.clear();
+            }
+          })
+        ])
       );
-      const EditorSaveBtn = EditorCtrl.appendChild(
-        view.el('button', {
-          id: 'EditorSaveBtn',
-          className: 'btn primary',
-          textContent: 'Save'
-        })
-      );
-      const EditorMaximizeBtn = EditorCtrl.appendChild(
-        view.el('button', {
-          id: 'EditorMaximizeBtn',
-          className: 'btn secondary',
-          textContent: 'Maximize',
-          title: 'Maximize editor',
-          'aria-label': 'Maximize editor'
-        })
-      );
-      const EditorUpdateBtn = EditorCtrl.appendChild(
-        view.el('button', {
-          id: 'EditorUpdateBtn',
-          className: 'btn primary',
-          textContent: 'Update',
-          style: 'display:none;'
-        })
-      );
-      const EditorClearBtn = EditorCtrl.appendChild(
-        view.el('button', {
-          id: 'EditorClearBtn',
-          className: 'btn info',
-          textContent: 'Clear',
-          style: 'display:none;'
-        })
-      );
-
-
+      
       this.editorField.addEventListener('paste', async ev => {
         const imageItem = Array.from(ev.clipboardData?.items || []).find(
           item => item.kind === 'file' && item.type.startsWith('image/')
@@ -667,10 +810,7 @@ const view = {
         );
 
         try {
-          const uploaded = await api.api('/api/images', {
-            method: 'POST',
-            body: formData
-          });
+          const uploaded = await api.uploadImage(formData);
           if (this.generation !== generation) return;
 
           const markerPosition = this.ed.value.indexOf(placeholder);
@@ -682,8 +822,7 @@ const view = {
               'preserve'
             );
           }
-          this.status.textContent = 'Immagine inserita nella nota.';
-          this.status.dataset.state = 'success';
+          this.addStatus('Immagine inserita nella nota.', 'success');
         } catch (error) {
           if (this.generation !== generation) return;
 
@@ -696,9 +835,7 @@ const view = {
               'preserve'
             );
           }
-          this.status.textContent =
-            `Immagine non inserita: ${error.message}`;
-          this.status.dataset.state = 'error';
+          this.addStatus( `Immagine non inserita: ${error.message}`, 'error');
         } finally {
           if (this.generation !== generation) return;
           this.pendingImageUploads -= 1;
@@ -740,7 +877,7 @@ const view = {
           ev.preventDefault();
           ev.stopImmediatePropagation();
           this.ed.setRangeText(
-            helper.localDate(),
+            h.localDate(),
             this.ed.value.length,
             this.ed.value.length,
             'end'
@@ -759,21 +896,6 @@ const view = {
           this.insertMarkdown(marker, marker);
         }
       }, true);
-
-      EditorSaveBtn.addEventListener('click', async ev => {
-        if (this.pendingImageUploads) return;
-        await this.saveNote();
-      });
-      EditorMaximizeBtn.addEventListener('click', ev => {
-        this.toggleMaximize();
-      });
-      EditorClearBtn.addEventListener('click', ev => {
-        this.clear();
-      });
-      EditorUpdateBtn.addEventListener('click', async ev => {
-        if (this.pendingImageUploads) return;
-        this.editNote();
-      });
 
       // Build the controls synchronously; keep the textarea usable while loading.
       // A stale render must never attach Monaco to a newer page.
@@ -795,9 +917,36 @@ const view = {
         });
         textarea.before(host);
 
+        // Prepara il Markdown personalizzato una sola volta.
+        const languageid = 'journote-markdown';
+
+        if (!monaco.languages.getLanguages().some(l => l.id === languageid)) {
+          const markdown = monaco.languages
+            .getLanguages()
+            .find(l => l.id === 'markdown');
+
+          const { language, conf } = await markdown.loader();
+
+          monaco.languages.register({ id: languageid });
+          monaco.languages.setLanguageConfiguration(languageid, conf);
+
+          monaco.languages.setMonarchTokensProvider(languageid, {
+            ...language,
+            tokenizer: {
+              ...language.tokenizer,
+              root: [
+                // # senza spazio dopo: testo normale, non titolo.
+                [/^ {0,3}#+(?![# ])/, ''],
+                ...language.tokenizer.root
+              ]
+            }
+          });
+        }
+
+        // Crea il modello usando il Markdown personalizzato.
         const textModel = monaco.editor.createModel(
           textarea.value,
-          'markdown'
+          languageid
         );
         this.monacoModel = textModel;
 
@@ -916,15 +1065,47 @@ const view = {
         if (!textarea.isConnected) this.editorField.prepend(textarea);
         this.ed = textarea;
         console.warn('Monaco initialization failed:', error);
-        this.status.textContent =
-          'Editor semplice attivo: impossibile caricare Monaco.';
-        this.status.dataset.state = 'error';
+        this.addStatus('Impossibile caricare Monaco.', 'error');
       }
     },
 
-    // Monaco belongs to this view; only the runtime load is shared across renders.
-    // Optional override: window.JOURNOTE_MONACO_VS = '/vendor/monaco/min/vs'.
+    addStatus(message, state = 'info') {
+      if (!message || !this.status?.isConnected) return;
+
+      const now = new Date();
+      const time = now.toLocaleTimeString('it-IT', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+
+      const item = view.el('div', {
+        className: 'editor-status-item',
+        dataset: {state}
+      }, [
+        view.el('time', {
+          className: 'editor-status-time',
+          dateTime: now.toISOString(),
+          textContent: time
+        }),
+        view.el('span', {
+          textContent: message
+        })
+      ]);
+
+      const container = this.status;
+      container.appendChild(item);
+
+      requestAnimationFrame(() => {
+        if (container.isConnected) {
+          container.scrollLeft = container.scrollWidth;
+        }
+      });
+    },
+
     loadMonaco() {
+      // Monaco belongs to this view; only the runtime load is shared across renders.
+      // Optional override: window.JOURNOTE_MONACO_VS = '/vendor/monaco/min/vs'.
       if (window.monaco?.editor) return Promise.resolve(window.monaco);
       if (this.loading) return this.loading;
       this.loading = new Promise((resolve, reject) => {
@@ -1324,17 +1505,17 @@ const view = {
     },
 
     toggleMaximize() {
-      const wrap = eid('EditorWrap');
+      const wrap = h.eid('EditorWrap');
       if (!wrap) return;
 
       const maximized = wrap.classList.toggle('editor-maximized');
 
-      eid('ColumnsWrap')?.classList.toggle(
+      h.eid('ColumnsWrap')?.classList.toggle(
         'editor-maximized',
         maximized
       );
 
-      const btn = eid('EditorMaximizeBtn');
+      const btn = h.eid('EditorMaximizeBtn');
       if (btn) {
         const label = maximized ? 'Minimize' : 'Maximize';
         btn.textContent = label;
@@ -1354,12 +1535,10 @@ const view = {
 
     updateImageUploadState() {
       const busy = this.pendingImageUploads > 0;
-      eid('EditorSaveBtn').disabled = busy;
-      eid('EditorUpdateBtn').disabled = busy;
+      h.eid('EditorSaveBtn').disabled = busy;
+      h.eid('EditorUpdateBtn').disabled = busy;
       if (busy) {
-        this.status.textContent =
-          `Caricamento immagine${this.pendingImageUploads > 1 ? ` (${this.pendingImageUploads})` : ''}...`;
-        this.status.dataset.state = 'loading';
+        this.addStatus(`Immagini in caricamento: ${this.pendingImageUploads}`, 'loading');
       }
     },
 
@@ -1414,12 +1593,10 @@ const view = {
     clear() {
       if (this.pendingImageUploads) return false;
       this.ed.value = '';
-      this.status.textContent = '';
-      this.status.dataset.state = '';
       this.currentNote = null;
-      eid('EditorSaveBtn').style.display = 'block';
-      eid('EditorUpdateBtn').style.display = 'none';
-      eid('EditorClearBtn').style.display = 'none';
+      h.eid('EditorSaveBtn').style.display = 'block';
+      h.eid('EditorUpdateBtn').style.display = 'none';
+      h.eid('EditorClearBtn').style.display = 'none';
       return true;
     },
 
@@ -1445,9 +1622,9 @@ const view = {
       this.currentNote = note;
       this.ed.value = note.text;
       this.ed.focus();
-      eid('EditorSaveBtn').style.display = 'none';
-      eid('EditorUpdateBtn').style.display = 'block';
-      eid('EditorClearBtn').style.display = 'block';
+      h.eid('EditorSaveBtn').style.display = 'none';
+      h.eid('EditorUpdateBtn').style.display = 'block';
+      h.eid('EditorClearBtn').style.display = 'block';
       this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
     },
 
@@ -1459,7 +1636,7 @@ const view = {
       const raw = this.ed.value;
       const newTags = businessLogic.getNewTags(raw);
       let saved = false;
-
+      this.addStatus('Salvataggio in corso…', 'loading');
       try {
         const response = await businessLogic.saveNote(
           raw,
@@ -1471,8 +1648,7 @@ const view = {
 
         if (isProperty) {
           if (this.currentNote === current && this.ed.value === raw) this.ed.value = '';
-          this.status.textContent =
-            `Proprietà salvata per ${response.tag}.`;
+          this.addStatus(`Proprietà salvata per ${response.tag}.`, 'success');
         } else {
           view.Main.pushNote(response.note);
           const leadingTags = [];
@@ -1485,23 +1661,23 @@ const view = {
               ? `${leadingTags.join(' ')} `
               : '';
           }
-          this.status.textContent = 'Nota salvata.';
+          this.addStatus('Nota salvata.', 'success');
         }
-
         businessLogic.addActionRequiredTags(
           isProperty
             ? newTags.filter(tag => tag === response.tag)
             : newTags
         );
-        this.status.dataset.state = 'success';
         await page.home.refreshMetadata();
         await view.ActionRequiredBox.render();
       } catch (error) {
         if (this.generation !== generation) return;
-        this.status.textContent = saved
-          ? `Salvato, ma aggiornamento della vista fallito: ${error.message}`
-          : `Salvataggio non riuscito: ${error.message}`;
-        this.status.dataset.state = 'error';
+        this.addStatus(
+          saved
+            ? `Salvato, ma aggiornamento della vista fallito: ${error.message}`
+            : `Salvataggio non riuscito: ${error.message}`,
+          'error'
+        );
       } finally {
         if (this.generation === generation) {
           this.saving = false;
@@ -1518,22 +1694,26 @@ const view = {
       const previousDate = current.date;
       this.saving = true;
       let saved = false;
+      this.addStatus('Aggiornamento della nota…', 'loading');
       try {
         const note = await businessLogic.editNote({
           ...current, text: raw, date: this.parseLeadingDate(raw) || current.date
         });
         saved = true;
         if (this.generation !== generation) return;
+        this.addStatus('Nota aggiornata.', 'success');
         view.Main.editedNote(note, previousTags, previousDate);
         if (this.currentNote === current && this.ed.value === raw) this.clear();
         else if (this.currentNote === current) this.currentNote = note;
         await page.home.refreshMetadata();
       } catch (error) {
         if (this.generation !== generation) return;
-        this.status.textContent = saved
-          ? `Nota salvata, aggiornamento fallito: ${error.message}`
-          : `Salvataggio non riuscito: ${error.message}`;
-        this.status.dataset.state = 'error';
+        this.addStatus(
+          saved
+            ? `Nota salvata, aggiornamento fallito: ${error.message}`
+            : `Salvataggio non riuscito: ${error.message}`,
+          'error'
+        );
       } finally {
         if (this.generation === generation) this.saving = false;
       }
@@ -1574,7 +1754,7 @@ const view = {
           innerHTML: `<i class="fa-xs fa-fw fa-solid fa-${icon} fa-middle" aria-hidden="true"></i>`,
           style: {
             top: '10px', left: '10px', zIndex: '1000', fontSize: '20px', height: '36px',
-            display: id === 'HamburgerBtn' && !eid('LeftBar') ? 'none' : ''
+            display: id === 'HamburgerBtn' && !h.eid('LeftBar') ? 'none' : ''
           },
           onclick
         }));
@@ -1686,7 +1866,7 @@ const view = {
       );
       const allItems = notes
         .concat(events.filter(ev => ev.date !== null))
-        .concat([{date: helper.localDate(), today: true}])
+        .concat([{date: h.localDate(), today: true}])
         .sort((a,b) => {
           const aDate = dayNumber(a.date);
           const bDate = dayNumber(b.date);
@@ -1699,13 +1879,17 @@ const view = {
         if (index > 0) {
           const days = Math.abs(dayNumber(note.date) - dayNumber(allItems[index - 1].date));
           if (Number.isFinite(days) && days > 0) {
-            const weeks = Math.floor(days / 7);
-            const remainingDays = days % 7;
-            for (let i = 0; i < weeks + remainingDays; i++) {
+            const months = Math.floor(days / 28);
+            let remainingDays = days % 28;
+            const weeks = Math.floor(remainingDays / 7);
+            remainingDays = days % 7;
+            for (let i = 0; i < months + weeks + remainingDays; i++) {
               elNoteList.appendChild(view.el('div', {
-                className: i < weeks
-                  ? 'notesDateGap-line notesDateGap-week'
-                  : 'notesDateGap-line',
+                className: i < months
+                  ? 'notesDateGap-line notesDateGap-month'
+                  : i < weeks 
+                    ? 'notesDateGap-line notesDateGap-week'
+                    :'notesDateGap-line',
                 'aria-hidden': 'true'
               }));
             }
@@ -1772,7 +1956,7 @@ const view = {
     renderTagDetails(elColSubheader, tag, tagObj) {
       elColSubheader.replaceChildren();
       if (tagObj == undefined) {
-        const tagType = helper.getClassfromTag(tag);
+        const tagType = h.getClassfromTag(tag);
         if (tagType == 'Journal') {
           elColSubheader.innerHTML = new Date(`${tag}T12:00:00`).toLocaleDateString('it-IT', {weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
         } else if (tagType == 'FullText') {
@@ -1782,8 +1966,8 @@ const view = {
         }
       } else {
         const conv = new showdown.Converter({metadata: true});
-        elColSubheader.innerHTML = conv.makeHtml(escapeHTML(tagObj.content || ''));
-        sanitizeRenderedMarkdown(elColSubheader);
+        elColSubheader.innerHTML = conv.makeHtml(h.escapeHTML(tagObj.content || ''));
+        h.sanitizeRenderedMarkdown(elColSubheader);
 
         const properties = Array.isArray(tagObj.properties)
           ? tagObj.properties
@@ -1807,9 +1991,9 @@ const view = {
               view.el('div', {className: 'columnTagPropertyValue'})
             );
             elPropertyValue.innerHTML = conv.makeHtml(
-              escapeHTML(property.value ?? '')
+              h.escapeHTML(property.value ?? '')
             );
-            sanitizeRenderedMarkdown(elPropertyValue);
+            h.sanitizeRenderedMarkdown(elPropertyValue);
             elProperty.appendChild(view.el('button', {
               className: 'btn muted small transparent columnTagPropertyEditBtn',
               innerHTML: '<i class="fa fa-pencil fa-solid fa-fw fa-2xs"></i>',
@@ -1831,7 +2015,7 @@ const view = {
     },
 
     refreshTagDetails() {
-      if (!eid('Main')) return;
+      if (!h.eid('Main')) return;
       const tags = new Map((model.get('tags') || []).map(tag => [tag.name, tag]));
       for (const column of this.el_cw.querySelectorAll('.column')) {
         this.renderTagDetails(column.querySelector('.columnSubHeader'), column.dataset.key, tags.get(column.dataset.key));
@@ -1898,7 +2082,7 @@ const view = {
       });
       if (tag.startsWith('filter-')) {
         message.textContent = 'Nessuna nota corrisponde a questa regola.';
-      } else if (helper.getClassfromTag(tag) === 'Journal') {
+      } else if (h.getClassfromTag(tag) === 'Journal') {
         message.textContent = 'Nessuna nota per questa data.';
       } else {
         message.textContent = 'Nessuna nota in questa raccolta.';
@@ -2002,11 +2186,11 @@ const view = {
         view.el('div', {
           className: 'noteDays flex-col',
           innerHTML:
-            helper.diffToToday(new Date(n.date)) +
+            h.diffToToday(new Date(n.date)) +
             (
               n.duedate
                 ? '<br><span class="color--c-error">' +
-                  helper.diffToToday(new Date(n.duedate)) +
+                  h.diffToToday(new Date(n.duedate)) +
                   '</span>'
                 : ''
             )
@@ -2038,20 +2222,41 @@ const view = {
           onclick: async ev => {
             ev.stopPropagation();
             if (!confirm('Delete this note?')) return;
-            const ok = await api.api(`/api/notes/${n.id}`, {
-              method: 'DELETE'
-            });
-            if (ok === null || ok?.status === 'deleted') {
+            let deleted = false;
+            view.EditorWrap.addStatus(
+              `Eliminazione nota ${n.id}…`,
+              'loading'
+            );
+            try {
+              const response = await api.deleteNote(n.id);
+              if (response !== null && response?.status !== 'deleted') {
+                throw new Error('Il server non ha confermato la cancellazione.');
+              }
+              deleted = true;
+              view.EditorWrap.addStatus(
+                `Nota ${n.id} eliminata.`,
+                'success'
+              );
               document.querySelectorAll(
                 `.noteItem[data-id="${CSS.escape(String(n.id))}"]`
               ).forEach(item => {
                 const list = item.closest('.notesList');
                 item.remove();
                 if (list && !list.querySelector('.noteItem')) {
-                  this.showEmptyState(list, list.closest('.column')?.dataset.key || '');
+                  this.showEmptyState(
+                    list,
+                    list.closest('.column')?.dataset.key || ''
+                  );
                 }
               });
               await page.home.refreshMetadata();
+            } catch (error) {
+              view.EditorWrap.addStatus(
+                deleted
+                  ? `Nota eliminata, aggiornamento della vista fallito: ${error.message}`
+                  : `Eliminazione non riuscita: ${error.message}`,
+                'error'
+              );
             }
           }
         })
@@ -2067,7 +2272,7 @@ const view = {
       // A tag at the start of a line ("#qwe", ">qwe", "+qwe") would be
       // parsed by Markdown as a heading, blockquote or list. Escape the
       // tag prefix so it is rendered as plain text instead.
-      const protectedText = escapeHTML(n.text).replace(
+      const protectedText = h.escapeHTML(n.text).replace(
         /(^|\n)([#+][A-Za-z0-9_.-]+)/g,
         (_, lineStart, tag) => `${lineStart}\\${tag}`
       );
@@ -2075,7 +2280,7 @@ const view = {
       const html = converter.makeHtml(protectedText);
 
       elNoteText.innerHTML = html;
-      sanitizeRenderedMarkdown(elNoteText);
+      h.sanitizeRenderedMarkdown(elNoteText);
       const walker = document.createTreeWalker(elNoteText, NodeFilter.SHOW_TEXT);
       const textNodes = [];
       while (walker.nextNode()) textNodes.push(walker.currentNode);
@@ -2089,7 +2294,7 @@ const view = {
           const tag = match[2];
           fragment.append(node.textContent.slice(last, offset));
           fragment.append(view.el('button', {
-            type: 'button', className: `lbl lbl-${helper.getClassfromTag(tag)}`,
+            type: 'button', className: `lbl lbl-${h.getClassfromTag(tag)}`,
             dataset: {tag}, title: `Apri ${tag}`,
             textContent: tag === currentTag ? '●' : tag,
             onclick: () => page.home.addTagview(tag)
@@ -2128,13 +2333,13 @@ const view = {
     },
 
     async openRelatedNote(
-      noteId,
+      noteid,
       position = 'below',
       anchorItem = null
     ) {
-      if (!noteId) return;
+      if (!noteid) return;
       try {
-        const note = await api.api(`/api/notes/${noteId}`);
+        const note = await api.getNote(noteid);
         if (!note) return;
         const noteList = anchorItem?.closest('.notesList');
         if (!noteList) return;
@@ -2143,7 +2348,7 @@ const view = {
           note,
           noteList.closest('.column-content')?.dataset.key || note.date,
           position === 'above' ? 'parent' : 'child',
-          {editable: Boolean(eid('Main'))}
+          {editable: Boolean(h.eid('Main'))}
         );
         if (position === 'above') {
           anchorItem.before(elNoteItem);
@@ -2500,24 +2705,25 @@ const view = {
         innerHTML: tag.treed ? '<i class="fa-xs fa-fw fa-solid fa-eye fa-middle"></i>' : '<i class="fa-xs fa-fw fa-solid fa-eye-slash fa-middle"></i>',
         onclick: async ev => {
           ev.stopPropagation();
-          const updated = await api.api(
-            `/api/tags/${tag.category}/${tag.name.substring(1)}`,
-            {
-              method: 'PATCH',
-              body: {
-                treed: !tag.treed,
-                parent: tag.parent || '',
-                content: tag.content || ''
-              }
-            }
-          );
-          model.set('tags', tags => {
-            const index = tags.findIndex(
-              item => item.name === updated.name
+          let saved = false;
+          try {
+            const updated = await api.updateTagVisibility(tag, !tag.treed);
+            saved = true;
+            view.EditorWrap.addStatus(
+              `Visibilità di ${updated.name} aggiornata.`,
+              'success'
             );
-            if (index !== -1) tags[index] = updated;
-            return tags;
-          });
+            model.set('tags', tags => {
+              const index = tags.findIndex(item => item.name === updated.name);
+              if (index !== -1) tags[index] = updated;
+              return tags;
+            });
+          } catch (error) {
+            const message = saved
+              ? `Visibilità salvata, aggiornamento della vista fallito: ${error.message}`
+              : `Modifica della visibilità non riuscita: ${error.message}`;
+            view.EditorWrap.addStatus(message, 'error');
+          }
         }
       }));
 
@@ -2588,7 +2794,7 @@ const view = {
         const item = view.el('button', {
           type: 'button'
         });
-        const category = helper.getClassfromTag(tag);
+        const category = h.getClassfromTag(tag);
         const categoryClass = {
           Projects: 'project',
           Persons: 'person',
@@ -2636,10 +2842,11 @@ const view = {
 
       const root = this.el;
       const generation = this.generation = (this.generation || 0) + 1;
-      const numNotesOfMonth = await api.api(
-        `/api/notes/${this.calendarYear}/${String(this.calendarMonth + 1).padStart(2, '0')}/count`
+      const numNotesOfMonth = await api.getMonthlyNoteCounts(
+        this.calendarYear,
+        this.calendarMonth + 1
       );
-      if (generation !== this.generation || root !== eid('JournalBox')) return;
+      if (generation !== this.generation || root !== h.eid('JournalBox')) return;
       const numNotesOfMonthMax = Math.max(
         ...Object.values(numNotesOfMonth)
       );
@@ -3113,7 +3320,7 @@ const view = {
       const root = this.tableList;
       this.tableList.textContent = 'Caricamento…';
       try {
-        const tables = await api.api('/api/explorer/tables');
+        const tables = await api.getExplorerTables();
         if (root !== this.tableList || !root.isConnected) return;
         this.tableList.replaceChildren();
 
@@ -3164,10 +3371,7 @@ const view = {
       this.queryStatus.dataset.state = 'loading';
 
       try {
-        const result = await api.api('/api/explorer/query', {
-          method: 'POST',
-          body: {query}
-        });
+        const result = await api.runExplorerQuery(query);
         if (request !== this.queryRequest || root !== this.results || !root.isConnected) return;
         this.renderResults(result);
         const count = result.rows.length;
@@ -3217,8 +3421,9 @@ const view = {
     }
   }
 };
+//#endregion
 
-// MODAL
+//#region MODAL
 const modal = {
   shortcutsModal: {
     el: null,
@@ -3256,7 +3461,7 @@ const modal = {
         <table style="width:100%;border-collapse:collapse;text-align:left">
           <thead><tr><th>Shortcut</th><th>Action</th><th>Context</th></tr></thead>
           <tbody>${shortcuts.map(row => `<tr>${row.map(cell =>
-            `<td style="padding:8px 6px;border-bottom:1px solid #8884">${escapeHTML(cell)}</td>`
+            `<td style="padding:8px 6px;border-bottom:1px solid #8884">${h.escapeHTML(cell)}</td>`
           ).join('')}</tr>`).join('')}</tbody>
         </table>
         <p>Monaco’s standard editing shortcuts also remain available. Use the editor’s Minimize button to restore its size.</p>
@@ -3284,11 +3489,9 @@ const modal = {
   imageViewer: {
     el: null,
     onKeydown: null,
-
     open(src, alt = '') {
       return this.render(src, alt);
     },
-
     render(src, alt = '') {
       this.close();
       this.previousFocus = document.activeElement;
@@ -3297,7 +3500,6 @@ const modal = {
       this.el.setAttribute('role', 'dialog');
       this.el.setAttribute('aria-modal', 'true');
       this.el.setAttribute('aria-label', 'Immagine a schermo intero');
-
       const closeButton = view.el('button', {
         type: 'button',
         className: 'image-lightbox-close'
@@ -3306,13 +3508,11 @@ const modal = {
       closeButton.title = 'Chiudi';
       closeButton.innerHTML = '<i class="fa-solid fa-xmark"></i>';
       closeButton.addEventListener('click', () => this.close());
-
       const image = view.el('img', {
         className: 'image-lightbox-image',
         src: src,
         alt: alt
       });
-
       this.el.append(closeButton, image);
       this.el.addEventListener('click', ev => {
         if (ev.target === this.el) this.close();
@@ -3415,7 +3615,7 @@ const modal = {
             });
             option.setAttribute('role', 'option');
             option.innerHTML =
-              `<span>${escapeHTML(tag.name)}</span><span class="tag-category">${escapeHTML(tag.category)}</span>`;
+              `<span>${h.escapeHTML(tag.name)}</span><span class="tag-category">${h.escapeHTML(tag.category)}</span>`;
             option.onmousedown = ev => ev.preventDefault();
             option.onclick = () => addToken(tag.name, 'tag');
             suggestions.appendChild(option);
@@ -3487,16 +3687,17 @@ const modal = {
         form.dataset.saving = 'true';
         const rule = this.tokens.map(token => token.value).join(' ');
         try {
-          const notes = await api.api('/api/notes/filter', {
-            method: 'POST',
-            body: {rule}
-          });
+          const notes = await api.filterNotes(rule);
           if (this.el !== dialog || !dialog.isConnected) return;
           await page.home.addFilterview(rule, notes);
           dialog.remove();
           if (this.el === dialog) this.el = null;
         } catch (err) {
           error.textContent = err.message;
+          view.EditorWrap.addStatus(
+            `Filtro non applicato: ${err.message}`,
+            'error'
+          );
         } finally {
           delete form.dataset.saving;
         }
@@ -3530,16 +3731,16 @@ const modal = {
             </label>
             <div>
               <label for="editform-rename">Rename Tag:</label>
-              <input type="text" id="editform-rename" name="rename" value="${escapeHTML(tagObj.name)}" placeholder="Enter new name">
+              <input type="text" id="editform-rename" name="rename" value="${h.escapeHTML(tagObj.name)}" placeholder="Enter new name">
             </div>
             <div>
               <label for="editform-parent">Parent Tag:</label>
-              <input type="text" id="editform-parent" name="parent" value="${escapeHTML(tagObj.parent)}" placeholder="Enter parent tag">
+              <input type="text" id="editform-parent" name="parent" value="${h.escapeHTML(tagObj.parent)}" placeholder="Enter parent tag">
               <div id="editform-parent-suggestions" class="filter-tag-suggestions" role="listbox" style="display: none;"></div>
             </div>
             <div style="flex: 1; display: flex; flex-direction: column">
               <label for="editform-content">Content:</label>
-              <textarea style="flex:1" id="editform-content" name="content" class="modal-textarea">${escapeHTML(tagObj.content)}</textarea>
+              <textarea style="flex:1" id="editform-content" name="content" class="modal-textarea">${h.escapeHTML(tagObj.content)}</textarea>
             </div>
             <div></div>
             <div class="modal-actions">
@@ -3605,7 +3806,7 @@ const modal = {
           parentSuggestions.firstElementChild.click();
         } else if (ev.key === 'Enter') {
           ev.preventDefault();
-          EditTagForm.requestSubmit(eid('edit-tree-modal-save'));
+          EditTagForm.requestSubmit(h.eid('edit-tree-modal-save'));
         } else if (ev.key === 'Escape') {
           parentSuggestions.style.display = 'none';
         }
@@ -3626,22 +3827,32 @@ const modal = {
         save.disabled = true;
         let saved = false;
         try {
-          const updated = await api.api(
-            `/api/tags/${encodeURIComponent(tagObj.category)}/${encodeURIComponent(helper.getAnonymizedTag(tag))}`,
-            {method: 'PATCH', body: Object.fromEntries(new FormData(EditTagForm).entries())}
+          view.EditorWrap.addStatus(
+            `Salvataggio tag ${tagObj.name}…`,
+            'loading'
+          );
+          const updated = await api.updateTag(
+            tagObj,
+            Object.fromEntries(new FormData(EditTagForm).entries())
           );
           saved = true;
+          const message = updated.name !== tagObj.name
+            ? `Tag rinominato: ${tagObj.name} → ${updated.name}`
+            : `Tag ${updated.name} salvato.`;
+          view.EditorWrap.addStatus(message, 'success');
           businessLogic.completeActionRequiredTag(tagObj.name);
           await page.home.refreshMetadata();
           view.ActionRequiredBox.render();
-          if (updated.name !== tagObj.name && eid('Main') && model.get('tagsVisible').includes(tagObj.name)) {
+          if (updated.name !== tagObj.name && h.eid('Main') && model.get('tagsVisible').includes(tagObj.name)) {
             page.home.removeTagview(tagObj.name);
             await page.home.addTagview(updated.name);
           }
           dialog.remove();
           if (this.el === dialog) this.el = null;
         } catch (error) {
-          alert(`${saved ? 'Tag salvato, aggiornamento fallito' : 'Salvataggio non riuscito'}: ${error.message}`);
+          const message =
+            `${saved ? 'Tag salvato, aggiornamento fallito' : 'Salvataggio non riuscito'}: ${error.message}`;
+          view.EditorWrap.addStatus(message, 'error');
         } finally {
           delete EditTagForm.dataset.saving;
           save.disabled = false;
@@ -3738,13 +3949,14 @@ const modal = {
         propertiesList.appendChild(row);
       };
 
-      const response = await api.api(`/api/tags/${encodeURIComponent(tagObj.category)}/${encodeURIComponent(helper.getAnonymizedTag(tag))}/properties`);
+      const response = await api.getTagProperties(tagObj);
       response.properties.forEach(addRow);
     }
   }
 };
+//#endregion
 
-// ROUTER
+//#region ROUTER
 let routeGeneration = 0;
 async function router() {
   const generation = ++routeGeneration;
@@ -3764,7 +3976,7 @@ async function router() {
       await view.Explorer.render();
     } else {
       view.EditorWrap.dispose();
-      eid('app').replaceChildren(view.el('p', {textContent: 'Not found'}));
+      h.eid('app').replaceChildren(view.el('p', {textContent: 'Not found'}));
     }
   } catch (error) {
     if (generation !== routeGeneration) return;
@@ -3772,8 +3984,9 @@ async function router() {
     alert(`Impossibile aprire la pagina: ${error.message}`);
   }
 }
+//#endregion
 
-// RUN
+//#region RUN
 (async () => {
   document.addEventListener('keydown', ev => {
     if(ev.repeat) return;
@@ -3799,7 +4012,7 @@ async function router() {
       if (ev.key.toLowerCase() === 't') {
         console.log('Alt+t pressed');
         ev.preventDefault();
-        const today = helper.localDate();
+        const today = h.localDate();
         page.home.addTagview(today);
       }
       if (ev.key.toLowerCase() === 'w') {
@@ -3867,4 +4080,4 @@ async function router() {
   window.addEventListener('hashchange', router);
   await router();
 })();
-
+//#endregion
