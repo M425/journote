@@ -1685,7 +1685,7 @@ const view = {
           : NaN
       );
       const allItems = notes
-        .concat(events)
+        .concat(events.filter(ev => ev.date !== null))
         .concat([{date: helper.localDate(), today: true}])
         .sort((a,b) => {
           const aDate = dayNumber(a.date);
@@ -1696,7 +1696,6 @@ const view = {
           return 0;
         });
       allItems.forEach((note, index) => {    
-        console.log(note, index);
         if (index > 0) {
           const days = Math.abs(dayNumber(note.date) - dayNumber(allItems[index - 1].date));
           if (Number.isFinite(days) && days > 0) {
@@ -1751,7 +1750,6 @@ const view = {
     },
 
     genTodayItem(event, tag) {
-      console.log(event);
       const elNoteItem = view.el('div', {
         className: `noteItem todayItem`,
         dataset: {id: 'today', date: event.date}
@@ -2073,7 +2071,10 @@ const view = {
         /(^|\n)([#@>+][A-Za-z0-9_.-]+)/g,
         (match, lineStart, tag) => `${lineStart}\\${tag}`
       );
+      console.log(n.text);
       let html = converter.makeHtml(escapeHTML(protectedText));
+      console.log(protectedText);
+      console.log(n.text);
 
       elNoteText.innerHTML = html;
       sanitizeRenderedMarkdown(elNoteText);
