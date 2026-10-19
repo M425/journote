@@ -2067,14 +2067,12 @@ const view = {
       // A tag at the start of a line ("#qwe", ">qwe", "+qwe") would be
       // parsed by Markdown as a heading, blockquote or list. Escape the
       // tag prefix so it is rendered as plain text instead.
-      const protectedText = n.text.replace(
-        /(^|\n)([#@>+][A-Za-z0-9_.-]+)/g,
-        (match, lineStart, tag) => `${lineStart}\\${tag}`
+      const protectedText = escapeHTML(n.text).replace(
+        /(^|\n)([#+][A-Za-z0-9_.-]+)/g,
+        (_, lineStart, tag) => `${lineStart}\\${tag}`
       );
-      console.log(n.text);
-      let html = converter.makeHtml(escapeHTML(protectedText));
-      console.log(protectedText);
-      console.log(n.text);
+
+      const html = converter.makeHtml(protectedText);
 
       elNoteText.innerHTML = html;
       sanitizeRenderedMarkdown(elNoteText);
