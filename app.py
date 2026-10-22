@@ -586,6 +586,178 @@ def api_set_tag_properties_order(category, anonTag):
     return jsonify({"success": True, "status": "property_saved", "kind": "tag_property",
                     "note": None, "tag": tag, "properties": STORE.get_tag_properties(tag)})
 
+# ------------------ Local project folders ------------------
+# Stored as an ordinary tag property so the existing Store owns persistence.
+PROJECT_FOLDER_KEY = "local_folder"
+
+
+def require_local_folder_request():
+    from urllib.parse import urlsplit
+    # CORS is enabled elsewhere in this app; filesystem routes must remain local.
+    if request.remote_addr not in {"127.0.0.1", "::1"}:
+        abort(json_error(403, "Folder access is only available on this computer"))
+    if urlsplit(request.host_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+        abort(json_error(403, "Open Journote through localhost or 127.0.0.1"))
+    if request.headers.get("X-Journote-Local") != "1":
+        abort(json_error(403, "Missing local application header"))
+    origin = request.headers.get("Origin")
+    if origin and origin != request.host_url.rstrip("/"):
+        abort(json_error(403, "Cross-origin folder access is not allowed"))
+
+
+def folder_path(value):
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise ValueError("Select an existing absolute folder path")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError("The folder path must be absolute")
+    path = path.resolve(strict=True)
+    if not path.is_dir():
+        raise ValueError("The selected path is not a folder")
+    return path
+
+
+def open_project_file(path):
+    """Ask Windows to open a validated regular file with its associated app."""
+    startfile = getattr(os, 'startfile', None)
+    if startfile is None:
+        return json_error(501, 'Opening files in the default app is available only on Windows')
+    try:
+        startfile(str(path), 'open')
+    except OSError as error:
+        if getattr(error, 'winerror', None) == 1155:
+            return json_error(409, 'No default application is associated with this file type in Windows')
+        return json_error(400, 'Windows could not open this file; check its permissions and default application')
+    return jsonify({'status': 'open_requested'})
+
+
+def project_file_preview(path):
+    """Read bounded local bytes; never execute or render active documents as HTML."""
+    from io import BytesIO
+    types = {
+        '.pdf': ('pdf', 'application/pdf'),
+        '.png': ('image', 'image/png'), '.jpg': ('image', 'image/jpeg'),
+        '.jpeg': ('image', 'image/jpeg'), '.gif': ('image', 'image/gif'),
+        '.webp': ('image', 'image/webp'), '.bmp': ('image', 'image/bmp'),
+        '.avif': ('image', 'image/avif'), '.ico': ('image', 'image/x-icon'),
+        '.mp3': ('audio', 'audio/mpeg'), '.wav': ('audio', 'audio/wav'),
+        '.ogg': ('audio', 'audio/ogg'), '.m4a': ('audio', 'audio/mp4'),
+        '.flac': ('audio', 'audio/flac'),
+        '.mp4': ('video', 'video/mp4'), '.webm': ('video', 'video/webm'),
+        '.mov': ('video', 'video/quicktime'),
+    }
+    text_extensions = set(('.txt .md .log .csv .tsv .json .xml .yaml .yml .ini .cfg '
+                           '.js .ts .jsx .tsx .py .html .htm .css .scss .sql .sh '
+                           '.bat .ps1 .c .cpp .h .java .cs .go .rs .php .svg').split())
+    extension = path.suffix.lower()
+    kind, mime = types.get(extension, ('text', 'text/plain') if extension in text_extensions
+                           or path.name.lower() in {'readme', 'license', 'dockerfile', 'makefile'}
+                           else (None, None))
+    if kind is None:
+        return json_error(415, 'Preview unavailable for this file type (including Office documents and archives)')
+    limit = (2 if kind == 'text' else 32) * 1024 * 1024
+    if path.stat().st_size > limit:
+        return json_error(413, f'Preview limit: {limit // (1024 * 1024)} MB for this file type')
+    with path.open('rb') as source:
+        content = source.read(limit + 1)
+    if len(content) > limit:
+        return json_error(413, 'File exceeds the preview size limit')
+    if kind == 'pdf' and not content.startswith(b'%PDF-'):
+        return json_error(415, 'The selected file is not a valid PDF')
+    if kind == 'text':
+        encoding = 'utf-16' if content.startswith((b'\xff\xfe', b'\xfe\xff')) else 'utf-8-sig'
+        try:
+            text = content.decode(encoding)
+        except UnicodeError:
+            return json_error(415, 'Text preview requires UTF-8 or UTF-16 encoding')
+        if '\x00' in text:
+            return json_error(415, 'Binary content cannot be previewed as text')
+        content = text.encode('utf-8')
+    response = send_file(BytesIO(content), mimetype=mime, download_name=path.name,
+                         as_attachment=False, conditional=False, max_age=0)
+    response.headers['X-Journote-Preview'] = kind
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Cache-Control'] = 'no-store'
+    response.headers['Content-Security-Policy'] = "sandbox; default-src 'none'"
+    return response
+
+
+def folder_listing(path, root=None, directories_only=False):
+    entries = []
+    for child in path.iterdir():
+        try:
+            resolved = child.resolve(strict=True)
+            if root is not None and not resolved.is_relative_to(root):
+                continue  # Do not follow junctions/symlinks outside the linked folder.
+            directory = child.is_dir()
+            if directories_only and not directory:
+                continue
+            entries.append({"name": child.name, "directory": directory,
+                            "path": str(child.relative_to(root)) if root else str(child)})
+        except OSError:
+            continue
+    entries.sort(key=lambda entry: (not entry["directory"], entry["name"].casefold()))
+    parent = (str(path.parent.relative_to(root)) if path != root else None) if root else (
+        str(path.parent) if path.parent != path else "")
+    return {"path": str(path), "relative": str(path.relative_to(root)) if root else "",
+            "parent": parent, "entries": entries, "linked": root is not None}
+
+
+@app.route("/api/tags/<category>/<anonTag>/folder/<action>", methods=["POST"])
+def api_project_folder(category, anonTag, action):
+    require_local_folder_request()
+    if category != "Projects":
+        return json_error(400, "Only projects can link a folder")
+    tag = "#" + anonTag
+    if STORE.get_tag(tag) is None:
+        return json_error(404, "Project not found")
+    data = require_json()
+    try:
+        if action == "browse":
+            value = data.get("path", "")
+            if value == "":
+                roots = [Path(f"{letter}:/") for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"] if os.name == "nt" else [Path("/")]
+                return jsonify({"path": None, "parent": None, "entries": [
+                    {"name": str(root), "path": str(root), "directory": True}
+                    for root in roots if root.is_dir()]})
+            return jsonify(folder_listing(folder_path(value), directories_only=True))
+        if action == "link":
+            path = folder_path(data.get("path"))
+            # Ensure the selected directory is readable before persisting it.
+            with os.scandir(path):
+                pass
+            STORE.set_tag_property(tag, PROJECT_FOLDER_KEY, str(path))
+            return jsonify({"path": str(path), "linked": True})
+        if action in {"files", "preview", "open"}:
+            properties = STORE.get_tag_properties(tag)
+            value = next((item["value"] for item in properties if item["key"] == PROJECT_FOLDER_KEY), "")
+            if not value:
+                if action in {"preview", "open"}:
+                    return json_error(404, "No folder linked to this project")
+                return jsonify({"path": None, "parent": None, "entries": [], "linked": False})
+            root = folder_path(value)
+            relative = data.get("relative", "")
+            if not isinstance(relative, str) or "\x00" in relative or Path(relative).is_absolute() or Path(relative).drive:
+                raise ValueError("Invalid relative folder path")
+            path = (root / relative).resolve(strict=True)
+            if not path.is_relative_to(root):
+                return json_error(403, "The folder is outside this project's linked folder")
+            if action in {"preview", "open"}:
+                if not path.is_file():
+                    return json_error(400, "Select a regular file")
+                return open_project_file(path) if action == "open" else project_file_preview(path)
+            return jsonify(folder_listing(folder_path(str(path)), root=root))
+        return json_error(404, "Unknown folder action")
+    except (ValueError, TypeError):
+        return json_error(400, "Invalid folder path or property value")
+    except FileNotFoundError:
+        return json_error(404, "Folder not found; it may have been moved or disconnected")
+    except PermissionError:
+        return json_error(403, "Permission denied for this folder")
+    except OSError:
+        return json_error(400, "Cannot read this folder")
+
+
 # ---------------------------
 # Dev entrypoint
 # ---------------------------

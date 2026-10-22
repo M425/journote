@@ -208,6 +208,28 @@ const api = {
     });
   },
 
+  async previewProjectFile(tag, relative, signal) {
+    const response = await fetch(`/api/tags/${api.tagPath(tag)}/folder/preview`, {
+      method: 'POST', signal,
+      headers: {'Content-Type': 'application/json', 'X-Journote-Local': '1'},
+      body: JSON.stringify({relative})
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error?.message || 'Impossibile caricare l’anteprima.');
+    }
+    return {kind: response.headers.get('X-Journote-Preview'), blob: await response.blob()};
+  },
+
+  // LOCAL PROJECT FOLDERS
+  projectFolder(tag, action, body = {}) {
+    return api.api(`/api/tags/${api.tagPath(tag)}/folder/${action}`, {
+      method: 'POST',
+      headers: {'X-Journote-Local': '1'},
+      body
+    });
+  },
+
   // PROPRIETÀ DEI TAG
 
   getTagProperties(tag) {
@@ -319,7 +341,7 @@ const model = {
   tagsBox_persons: {_v: false, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
   tagsBox_generic: {_v: false, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
   tagsVisible: {_v: [], subs: []},
-  tagsActive: {_v: null, subs: []},
+  tagsActive: {_v: null, subs: ['ProjectFiles']},
   leftBarVisible: {_v: true, subs: ['LeftBar']}
 };
 //#endregion
@@ -460,6 +482,8 @@ const businessLogic = {
 //#region PAGE
 const page = {
   renderShell(component, mainId) {
+    modal.filePreview.close();
+    view.ProjectFiles.dispose();
     view.EditorWrap.dispose();
     if (!view.mount(component, 'app')) return;
     component.el.append(view.el('aside', {id: 'LeftBar'}), view.el('div', {id: mainId}));
@@ -1609,6 +1633,7 @@ const view = {
       if (!wrap) return;
 
       const maximized = wrap.classList.toggle('editor-maximized');
+      h.eid('NotesWorkspace')?.classList.toggle('editor-maximized', maximized);
 
       h.eid('ColumnsWrap')?.classList.toggle(
         'editor-maximized',
@@ -1919,11 +1944,263 @@ const view = {
     }
   },
 
+  ProjectFiles: {
+    el: null,
+    observer: null,
+    width: 320,
+    dispose() {
+      this.observer?.disconnect();
+      this.observer = null;
+      this.el = null;
+    },
+    mount(workspace) {
+      this.dispose();
+      const handle = workspace.appendChild(view.el('div', {
+        role: 'separator', tabindex: 0, 'aria-orientation': 'vertical',
+        'aria-label': 'Larghezza colonna file', 'aria-controls': 'ProjectFiles',
+        className: 'project-files-resizer'
+      }));
+      const panel = this.el = workspace.appendChild(view.el('aside', {
+        id: 'ProjectFiles', tabindex: -1, 'aria-label': 'File della scheda attiva',
+        className: 'project-files'
+      }));
+      const resize = width => {
+        const available = workspace.getBoundingClientRect().width;
+        const max = Math.max(80, Math.min(640, available * 0.6));
+        const min = Math.min(180, max);
+        const actual = Math.round(Math.max(min, Math.min(max, width)));
+        panel.style.width = `${actual}px`;
+        handle.setAttribute('aria-valuemin', String(Math.round(min)));
+        handle.setAttribute('aria-valuemax', String(Math.round(max)));
+        handle.setAttribute('aria-valuenow', String(actual));
+        return actual;
+      };
+      let drag = null;
+      handle.onpointerdown = ev => {
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        handle.focus();
+        drag = {x: ev.clientX, width: panel.getBoundingClientRect().width};
+        handle.setPointerCapture(ev.pointerId);
+      };
+      handle.onpointermove = ev => {
+        if (drag) this.width = resize(drag.width + drag.x - ev.clientX);
+      };
+      handle.onpointerup = ev => {
+        drag = null;
+        if (handle.hasPointerCapture(ev.pointerId)) handle.releasePointerCapture(ev.pointerId);
+      };
+      handle.onpointercancel = handle.onlostpointercapture = () => { drag = null; };
+      handle.onkeydown = ev => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(ev.key)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const current = panel.getBoundingClientRect().width;
+        this.width = resize(ev.key === 'Home' ? 0 : ev.key === 'End' ? Infinity
+          : current + (ev.key === 'ArrowLeft' ? 20 : -20));
+      };
+      this.observer = new ResizeObserver(() => resize(this.width));
+      this.observer.observe(workspace);
+      resize(this.width);
+    },
+    fileType(name) {
+      const extension = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+      const types = [
+        ['pdf', 'file-pdf', 'PDF'],
+        ['doc docx odt rtf', 'file-word', 'Documento'],
+        ['xls xlsx xlsm ods csv tsv', 'file-excel', 'Foglio di calcolo'],
+        ['ppt pptx odp', 'file-powerpoint', 'Presentazione'],
+        ['png jpg jpeg gif svg webp bmp ico tif tiff heic avif', 'file-image', 'Immagine'],
+        ['mp3 wav flac aac m4a ogg wma', 'file-audio', 'Audio'],
+        ['mp4 mov avi mkv webm m4v wmv', 'file-video', 'Video'],
+        ['zip rar 7z tar gz bz2 xz', 'file-zipper', 'Archivio'],
+        ['js ts jsx tsx py html css scss json xml yaml yml sql sh bat ps1 c cpp h java cs go rs php', 'file-code', 'Codice'],
+        ['txt md log ini cfg', 'file-lines', 'Testo']
+      ];
+      const match = types.find(([extensions]) => extensions.split(' ').includes(extension));
+      return match ? {icon: match[1], label: match[2]} : {icon: 'file', label: 'File'};
+    },
+    icon(name, label) {
+      return view.el('i', {
+        className: `project-files-icon fa-solid fa-fw fa-${name}`,
+        'aria-hidden': 'true', title: label
+      });
+    },
+    appendTree(list, entries, tag) {
+      for (const entry of entries) {
+        const item = list.appendChild(view.el('li', {className: 'project-files-node'}));
+        if (!entry.directory) {
+          const type = this.fileType(entry.name);
+          item.appendChild(view.el('button', {
+            type: 'button', className: 'project-files-row project-files-file',
+            title: `Anteprima: ${entry.name}`, 'aria-label': `Anteprima: ${entry.name}`,
+            onclick: () => modal.filePreview.open(tag, entry)
+          }, [
+            this.icon(type.icon, type.label),
+            view.el('span', {className: 'project-files-name', textContent: entry.name})
+          ]));
+          continue;
+        }
+        const folder = item.appendChild(view.el('details', {className: 'project-files-folder'}));
+        const summary = folder.appendChild(view.el('summary', {className: 'project-files-row', title: entry.name}));
+        const icon = this.icon('folder', 'Cartella');
+        summary.append(icon, view.el('span', {className: 'project-files-name', textContent: entry.name}));
+        const children = folder.appendChild(view.el('ul', {className: 'project-files-children'}));
+        let loaded = false;
+        let loading = false;
+        folder.addEventListener('toggle', async () => {
+          icon.classList.toggle('fa-folder-open', folder.open);
+          icon.classList.toggle('fa-folder', !folder.open);
+          if (!folder.open || loaded || loading) return;
+          loading = true;
+          folder.setAttribute('aria-busy', 'true');
+          children.replaceChildren(view.el('li', {className: 'project-files-message', textContent: 'Caricamento…', role: 'status'}));
+          try {
+            const result = await api.projectFolder(tag, 'files', {relative: entry.path});
+            if (!folder.isConnected) return;
+            children.replaceChildren();
+            this.appendTree(children, result.entries, tag);
+            if (!result.entries.length) children.appendChild(view.el('li', {
+              className: 'project-files-message', textContent: 'Cartella vuota.'
+            }));
+            loaded = true;
+          } catch (error) {
+            if (!folder.isConnected) return;
+            children.replaceChildren(view.el('li', {
+              className: 'project-files-message', role: 'status',
+              textContent: `${error.message} Chiudi e riapri la cartella per riprovare.`
+            }));
+          } finally {
+            loading = false;
+            folder.removeAttribute('aria-busy');
+          }
+        });
+      }
+    },
+    render(selecting = false) {
+      if (!this.el?.isConnected) return;
+      const tag = model.get('tagsActive');
+      // A separate DOM session prevents old tab requests from painting a new tab.
+      const panel = view.el('section', {className: 'project-files-session'});
+      this.el.replaceChildren(panel);
+      if (!tag || h.getClassfromTag(tag) !== 'Projects') {
+        panel.appendChild(view.el('h2', {textContent: 'File del progetto'}));
+        panel.appendChild(view.el('p', {textContent: 'Seleziona una scheda progetto per visualizzare i file.'}));
+        return;
+      }
+      const title = panel.appendChild(view.el('h2', {className: 'project-files-title'}));
+      const pathForm = panel.appendChild(view.el('form', {className: 'project-files-path-form'}));
+      const pathInput = pathForm.appendChild(view.el('input', {
+        type: 'text', 'aria-label': 'Percorso cartella', placeholder: 'C:\\Progetti',
+        className: 'project-files-path-input'
+      }));
+      pathForm.appendChild(view.el('button', {type: 'submit', className: 'btn standard', textContent: 'Vai'}));
+      const pathLabel = panel.appendChild(view.el('p', {className: 'project-files-path'}));
+      const toolbar = panel.appendChild(view.el('div', {className: 'project-files-toolbar'}));
+      const status = panel.appendChild(view.el('p', {className: 'project-files-status', role: 'status', 'aria-live': 'polite'}));
+      const list = panel.appendChild(view.el('ul', {className: 'project-files-tree', 'aria-label': 'File e cartelle'}));
+      const actions = panel.appendChild(view.el('div', {className: 'project-files-actions'}));
+      let currentPath = null;
+      let currentRelative = '';
+      let generation = 0;
+      let saving = false;
+      const button = (parent, label, handler) => parent.appendChild(view.el('button', {
+        type: 'button', className: 'btn standard', textContent: label, onclick: handler
+      }));
+      const save = button(actions, 'Collega questa cartella', async () => {
+        if (!currentPath || saving) return;
+        saving = true;
+        save.disabled = true;
+        try {
+          await api.projectFolder(tag, 'link', {path: currentPath});
+          // Existing metadata refresh keeps open column properties up to date.
+          try {
+            await model.tags.reload();
+            view.TagsBoxList.render();
+            view.Main.refreshTagDetails();
+          } catch (error) {
+            view.EditorWrap.addStatus(`Cartella salvata; aggiornamento metadati fallito: ${error.message}`, 'error');
+          }
+          if (panel.isConnected) {
+            selecting = false;
+            await load('');
+          }
+        } catch (error) {
+          status.textContent = error.message;
+        } finally {
+          saving = false;
+          save.disabled = !currentPath;
+        }
+      });
+      const cancel = button(actions, 'Annulla', () => { selecting = false; load(''); });
+      const load = async (path) => {
+        const requestGeneration = ++generation;
+        currentPath = null;
+        save.disabled = true;
+        save.hidden = !selecting;
+        cancel.hidden = !selecting;
+        pathForm.hidden = !selecting;
+        title.textContent = `${selecting ? 'Collega cartella' : 'File del progetto'} — ${tag}`;
+        status.textContent = 'Caricamento…';
+        list.replaceChildren();
+        toolbar.replaceChildren();
+        pathLabel.textContent = '';
+        try {
+          const result = await api.projectFolder(tag, selecting ? 'browse' : 'files',
+            selecting ? {path} : {relative: path});
+          if (requestGeneration !== generation || !panel.isConnected) return;
+          currentPath = result.path;
+          currentRelative = result.relative || '';
+          pathLabel.textContent = result.path || 'Seleziona un disco';
+          pathInput.value = result.path || '';
+          save.disabled = !currentPath || saving;
+          if (selecting && result.parent !== null) button(toolbar, '↑ Cartella superiore', () => load(result.parent));
+          if (selecting) button(toolbar, 'Dischi', () => load(''));
+          else button(toolbar, 'Cambia cartella', () => { selecting = true; load(currentPath || ''); });
+          button(toolbar, 'Aggiorna', () => load(selecting ? currentPath || '' : currentRelative));
+          if (selecting) {
+            for (const entry of result.entries) {
+              const row = list.appendChild(view.el('li'));
+              const choose = button(row, '', () => load(entry.path));
+              choose.className = 'project-files-row project-files-choose';
+              choose.append(view.ProjectFiles.icon('folder', 'Cartella'),
+                view.el('span', {textContent: entry.name}));
+            }
+          } else {
+            view.ProjectFiles.appendTree(list, result.entries, tag);
+          }
+          status.textContent = !selecting && result.linked === false ? 'Nessuna cartella collegata.'
+            : result.entries.length ? `${result.entries.length} elementi` : 'Cartella vuota.';
+        } catch (error) {
+          if (requestGeneration !== generation || !panel.isConnected) return;
+          status.textContent = error.message;
+          if (selecting) button(toolbar, 'Dischi', () => load(''));
+          else button(toolbar, 'Collega o cambia cartella', () => { selecting = true; load(''); });
+        }
+      };
+      pathForm.onsubmit = ev => { ev.preventDefault(); load(pathInput.value); };
+      // Editing a path invalidates the previous browse selection until Vai is used.
+      pathInput.oninput = () => { currentPath = null; save.disabled = true; };
+      // Prevent app-wide shortcuts while typing a folder path.
+      pathInput.addEventListener('keydown', ev => ev.stopPropagation());
+      const project = (model.get('tags') || []).find(item => item.name === tag);
+      const linkedPath = project?.properties?.find(item => item.key === 'local_folder')?.value || '';
+      load(selecting ? linkedPath : '');
+      if (selecting) pathInput.focus();
+    }
+  },
+
   Main: {
     render() {
       if (!view.mount(this, 'Main')) return;
       this.el_tb = this.el.appendChild(view.el('div', {id: 'TopBar'}));
-      this.el_cw = this.el.appendChild(view.el('div', {id: 'ColumnsWrap', className: 'columns scrollable-x'}));
+      const workspace = this.el.appendChild(view.el('div', {
+        id: 'NotesWorkspace'
+      }));
+      this.el_cw = workspace.appendChild(view.el('div', {
+        id: 'ColumnsWrap', className: 'columns scrollable-x'
+      }));
+      view.ProjectFiles.mount(workspace);
       this.el_ew = this.el.appendChild(view.el('div', {id: 'EditorWrap'}));
       view.TopBar.render();
       view.EditorWrap.render();
@@ -1943,6 +2220,19 @@ const view = {
         onclick: ev => {ev.stopPropagation(); page.home.activateTagview(tag);}
       }));
       const elColHeaderBtnWrap = elColHeader.appendChild(view.el('div', {className: 'columnHeaderBtns'}));
+      if (h.getClassfromTag(tag) === 'Projects') {
+        elColHeaderBtnWrap.appendChild(view.el('button', {
+          type: 'button', className: 'btnp primary',
+          title: 'File della cartella collegata',
+          'aria-label': 'File della cartella collegata',
+          innerHTML: '<i class="fa-solid fa-folder-open fa-fw fa-xs" aria-hidden="true"></i>',
+          onclick: ev => {
+            ev.stopPropagation();
+            page.home.activateTagview(tag);
+            view.ProjectFiles.el?.focus();
+          }
+        }));
+      }
       elColHeaderBtnWrap.appendChild(view.el('button', {
         className: 'btnp primary',
         title: 'Show sub header',
@@ -2816,6 +3106,19 @@ const view = {
         onclick: async () => await page.home.addTagview(tag.name)
       }));
 
+      if (tag.category === 'Projects') {
+        header.appendChild(view.el('button', {
+          type: 'button', className: 'btn small muted transparent',
+          title: 'Collega o cambia cartella', 'aria-label': 'Collega o cambia cartella',
+          innerHTML: '<i class="fa-solid fa-folder-plus fa-fw fa-xs" aria-hidden="true"></i>',
+          onclick: async ev => {
+            ev.stopPropagation();
+            await page.home.addTagview(tag.name);
+            if (model.get('tagsActive') === tag.name) view.ProjectFiles.render(true);
+          }
+        }));
+      }
+
       header.appendChild(view.el('button', {
         className: tag.treed ? 'btn small primary transparent' : 'btn small muted transparent',
         innerHTML: tag.treed ? '<i class="fa-xs fa-fw fa-solid fa-eye fa-middle"></i>' : '<i class="fa-xs fa-fw fa-solid fa-eye-slash fa-middle"></i>',
@@ -3541,6 +3844,113 @@ const view = {
 
 //#region MODAL
 const modal = {
+  filePreview: {
+    el: null,
+    close() { this.el?.close(); },
+    async open(tag, entry) {
+      this.close();
+      const previousFocus = document.activeElement;
+      const controller = new AbortController();
+      let objectURL = null;
+      let cleaned = false;
+      const dialog = view.el('dialog', {
+        className: 'project-file-preview', 'aria-labelledby': 'project-preview-title'
+      });
+      this.el = dialog;
+      const header = dialog.appendChild(view.el('header', {className: 'project-preview-header'}));
+      header.appendChild(view.el('h2', {id: 'project-preview-title', textContent: entry.name}));
+      const openStatus = view.el('p', {
+        className: 'project-preview-status', role: 'status', 'aria-live': 'polite', hidden: true
+      });
+      let opening = false;
+      const openButton = header.appendChild(view.el('button', {
+        type: 'button', className: 'btn standard',
+        textContent: 'Apri nell’app predefinita',
+        onclick: async () => {
+          if (opening) return;
+          opening = true;
+          openButton.disabled = true;
+          openStatus.hidden = false;
+          openStatus.textContent = 'Richiesta di apertura…';
+          try {
+            await api.projectFolder(tag, 'open', {relative: entry.path});
+            if (dialog.open) openStatus.textContent = 'Richiesta di apertura inviata a Windows.';
+          } catch (error) {
+            if (dialog.open) openStatus.textContent = error.message;
+          } finally {
+            opening = false;
+            openButton.disabled = false;
+          }
+        }
+      }));
+      const close = header.appendChild(view.el('button', {
+        type: 'button', className: 'btn standard', textContent: 'Chiudi',
+        'aria-label': 'Chiudi anteprima', onclick: () => dialog.close()
+      }));
+      const status = dialog.appendChild(view.el('p', {
+        className: 'project-preview-status', role: 'status', textContent: 'Caricamento anteprima…'
+      }));
+      dialog.appendChild(openStatus);
+      const body = dialog.appendChild(view.el('div', {className: 'project-preview-body'}));
+      dialog.addEventListener('keydown', ev => ev.stopPropagation());
+      dialog.addEventListener('close', () => {
+        if (cleaned) return;
+        cleaned = true;
+        controller.abort();
+        for (const media of body.querySelectorAll('audio, video')) {
+          media.pause();
+          media.removeAttribute('src');
+          media.load();
+        }
+        body.replaceChildren();
+        if (objectURL) URL.revokeObjectURL(objectURL);
+        dialog.remove();
+        if (this.el === dialog) {
+          this.el = null;
+          if (previousFocus?.isConnected) previousFocus.focus();
+        }
+      });
+      document.body.appendChild(dialog);
+      dialog.showModal();
+      close.focus();
+      try {
+        const result = await api.previewProjectFile(tag, entry.path, controller.signal);
+        if (!dialog.open || this.el !== dialog) return;
+        if (result.kind === 'text') {
+          const text = await result.blob.text();
+          if (!dialog.open || this.el !== dialog) return;
+          body.appendChild(view.el('pre', {className: 'project-preview-text', textContent: text}));
+          status.textContent = 'Anteprima testo';
+          return;
+        }
+        if (!['image', 'pdf', 'audio', 'video'].includes(result.kind)) {
+          throw new Error('Anteprima non disponibile per questo formato.');
+        }
+        objectURL = URL.createObjectURL(result.blob);
+        let content;
+        if (result.kind === 'image') {
+          content = view.el('img', {src: objectURL, alt: entry.name});
+        } else if (result.kind === 'pdf') {
+          content = view.el('object', {
+            data: objectURL, type: 'application/pdf',
+            'aria-label': `Anteprima PDF: ${entry.name}`
+          }, [view.el('p', {textContent: 'Anteprima PDF non disponibile in questo browser.'})]);
+        } else {
+          content = view.el(result.kind, {src: objectURL, controls: true, preload: 'metadata'});
+        }
+        content.addEventListener('error', () => {
+          status.textContent = 'Il browser non riesce a visualizzare questo formato o il file è danneggiato.';
+        });
+        body.appendChild(content);
+        status.textContent = result.kind === 'pdf'
+          ? 'Anteprima PDF — richiede il visualizzatore PDF del browser.'
+          : 'Anteprima locale';
+      } catch (error) {
+        if (!dialog.open || this.el !== dialog || error.name === 'AbortError') return;
+        status.textContent = error.message;
+      }
+    }
+  },
   shortcutsModal: {
     el: null,
     render() {
