@@ -203,7 +203,7 @@ p {
   align-items: stretch;
   overflow-x: auto;        /* horizontal scroll */
   overflow-y: hidden;
-  scrollbar-width: thin;
+  scrollbar-width: none;
   scrollbar-color: var(--bg-d1) transparent;
   background: transparent;
 }
@@ -257,6 +257,7 @@ p {
   color: var(--ink);
   font-size: 0.96rem;
   font-weight: 700;
+  background: var(--bg-d1);
 }
 
 .column               .column-content .columnHeader .columnHeaderBtns {
@@ -285,7 +286,7 @@ p {
 }
 
 .column.active        .column-content .columnHeader {
-    background: var(--bg-d1);
+    background: var(--paper);
 }
 
 .column               .column-content .columnSubHeader {
@@ -971,30 +972,30 @@ select:focus-visible,
 
 .tagList-tree {
   list-style: none; /* Rimuovi i pallini di default */
-  padding-left: 10px; /* Indentazione per i livelli successivi */
-  margin: 4px 0px;
+  padding-left: 8px; /* Indentazione per i livelli successivi */
+  margin: 0px 0px 0px 8px;
+  background: #00000008;
+  border-left-width: 2px;
+  border-left-style: solid;
+  border-left-color: #00000010;
 }
 
-.tagList-tree ul {
-  display: none;
-}
 
 .tagList-tree li {
-  margin: 3px 0;
+  margin: 4px 0 0 0;
   padding: 0;
 }
 
 .tagList-tree li.expanded > ul {
   display: block;
 }
+.tagList-tree li          > ul {
+  display: none;
+}
 
 .tagList-tree .tagtree-box {
   display: flex;
   align-items: center;
-  padding: 2px 4px;
-  background: var(--paper);
-  border-width: 2px;
-  border-style: solid;
 }
 
 .tagList-tree .tagtree-box.Events {border-color: var(--c-event);}
@@ -1076,13 +1077,12 @@ select:focus-visible,
 }
 
 #TagsBox .tagList-tree li > div {
-  min-height: 32px;
-  border-width: 2px !important;
+  min-height: 18px;
 }
 
 #TagsBox .tagList-task {
-    margin: 2px 0 2px 8px;
-    padding: 2px 5px;
+    margin: 4px 0 0px 7px;
+    padding: 4px 5px;
     max-width: 100%;
     font-size: 0.83rem;
     line-height: 1.25;
@@ -1125,7 +1125,7 @@ select:focus-visible,
   align-items: center;
   gap: 8px;
   scrollbar-color: var(--bg-d1) transparent;
-  scrollbar-width: thin;
+  scrollbar-width: none;
 
   width: 100%;
   min-width: 0;
@@ -1232,6 +1232,20 @@ select:focus-visible,
   outline: none;
 }
 
+#EditorWrap                  #Editor .monaco-editor .reply-reference-bg {
+  background-color: #e0e7ff;
+  color: #3730a3 !important;
+  border-radius: 4px;
+}
+#EditorWrap                  #Editor .monaco-editor.monaco-component.vs{
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  z-index: 1000;
+}
 #EditorWrap                  #Editor .jn-project {
   color: var(--c-project) !important;
   background-color: var(--c-project-l);

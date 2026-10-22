@@ -436,10 +436,6 @@ def api_patch_note(note_id):
 
     priority, duedate, cleaned_text = extract_task_priority(data["text"])
     parent_id, cleaned_text = extract_reply_reference(cleaned_text)
-    logger.info('priority')
-    logger.info(priority)
-    logger.info('duedate')
-    logger.info(duedate)
     note["task"] = priority
     note['duedate'] = duedate
     note["replied_to"] = parent_id

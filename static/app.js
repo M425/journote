@@ -704,8 +704,67 @@ const view = {
       event.preventDefault();
     };
   },
-
   EditorWrap: {
+    languageId: 'journote-markdown',
+    tagTypes: {
+      '#': {label: 'Progetto', kind: 'Folder', className: 'jn-project'},
+      '@': {label: 'Persona', kind: 'User', className: 'jn-person'},
+      '>': {label: 'Evento', kind: 'Event', className: 'jn-event'},
+      '+': {label: 'Tag generico', kind: 'Keyword', className: 'jn-generic'}
+    },
+    tagPattern: /(?:^|\s)([#@+>][A-Za-z0-9_.-]+)/g,
+    replyPattern: /^<R:[A-Za-z0-9_-]+(?=\s|$)/,
+
+    editorOptions: {
+      fontSize: 14,
+      lineHeight: 22,
+      fontFamily: '"IBM Plex Mono", monospace',
+      minimap: {enabled: false},
+      wordWrap: 'on',
+      scrollBeyondLastLine: false,
+      lineNumbers: 'on',
+      glyphMargin: false,
+      folding: false,
+      lineNumbersMinChars: 3,
+      lineDecorationsWidth: 8,
+      overviewRulerLanes: 0,
+      hideCursorInOverviewRuler: true,
+      renderLineHighlight: 'all',
+      renderLineHighlightOnlyWhenFocus: true,
+      roundedSelection: true,
+      tabSize: 2,
+      insertSpaces: true,
+      detectIndentation: false,
+      multiCursorModifier: 'alt',
+      multiCursorMergeOverlapping: true,
+      padding: {top: 0, bottom: 0},
+      ariaLabel: 'Testo della nota in Markdown',
+      scrollbar: {
+        vertical: 'auto',
+        horizontal: 'hidden',
+        alwaysConsumeMouseWheel: false
+      },
+      suggestOnTriggerCharacters: true,
+      quickSuggestions: {
+        other: true,
+        comments: true,
+        strings: true
+      },
+      quickSuggestionsDelay: 100,
+      wordBasedSuggestions: 'off',
+      acceptSuggestionOnEnter: 'on',
+      acceptSuggestionOnCommitCharacter: true,
+      tabCompletion: 'on',
+      snippetSuggestions: 'none',
+      suggest: {
+        insertMode: 'replace',
+        showWords: false,
+        showSnippets: false,
+        preview: false,
+        selectionMode: 'always'
+      },
+      fixedOverflowWidgets: true,
+    },
 
     async render() {
       this.dispose();
@@ -713,6 +772,13 @@ const view = {
       this.currentNote = null;
       if (!view.mount(this, 'EditorWrap')) return;
 
+      this.renderEditorFields();
+      this.renderEditorControls();
+      this.bindEditorEvents(generation);
+      await this.mountMonaco(generation);
+    },
+
+    renderEditorFields() {
       this.editorField = this.el.appendChild(
         view.el('div', {className: 'editor-field'})
       );
@@ -741,300 +807,211 @@ const view = {
         })
       );
       this.pendingImageUploads = 0;
+    },
 
-      const EditorCtrl = this.el.appendChild(
-        view.el('div', {id: 'EditorCtrl'}, [
-          view.el('button', {
-            id: 'EditorSaveBtn', className: 'btn primary',
-            textContent: 'Save',
-            onclick: async (ev) => {
-              if (this.pendingImageUploads) return;
-              await this.saveNote();
-            }
-          }),
-          view.el('button', {
-            id: 'EditorMaximizeBtn', className: 'btn secondary',
-            textContent: 'Maximize',
-            'aria-label': 'Maximize editor',
-            onclick: ev => {
-              this.toggleMaximize();
-            }
-          }),
-          view.el('button', {
-            id: 'EditorUpdateBtn', className: 'btn primary',
-            textContent: 'Update', style: 'display:none;',
-            onclick: async ev => {
-              if (this.pendingImageUploads) return;
-              this.editNote();
-            }
-          }),
-          view.el('button', {
-            id: 'EditorClearBtn', className: 'btn info',
-            textContent: 'Clear', style: 'display:none;',
-            onclick: ev => {
-              this.clear();
-            }
-          })
-        ])
+    renderEditorControls() {
+      const buttons = [
+        {id: 'EditorSaveBtn', className: 'btn primary', textContent: 'Save',
+          onclick: () => this.submitNote('save')},
+        {id: 'EditorMaximizeBtn', className: 'btn secondary', textContent: 'Maximize',
+          'aria-label': 'Maximize editor', onclick: () => this.toggleMaximize()},
+        {id: 'EditorUpdateBtn', className: 'btn primary', textContent: 'Update',
+          style: 'display:none;', onclick: () => this.submitNote('edit')},
+        {id: 'EditorClearBtn', className: 'btn info', textContent: 'Clear',
+          style: 'display:none;', onclick: () => this.clear()}
+      ];
+      this.el.appendChild(view.el('div', {id: 'EditorCtrl'},
+        buttons.map(button => view.el('button', button))
+      ));
+    },
+
+    submitNote(mode = this.currentNote ? 'edit' : 'save') {
+      if (this.pendingImageUploads) return;
+      return mode === 'edit' ? this.editNote() : this.saveNote();
+    },
+
+    bindEditorEvents(generation) {
+      this.editorEvents = new AbortController();
+      const options = {capture: true, signal: this.editorEvents.signal};
+      this.editorField.addEventListener('paste', ev => this.pasteImage(ev, generation), options);
+      this.editorField.addEventListener('keydown', ev => this.handleEditorKeydown(ev), options);
+    },
+
+    replacePlaceholder(placeholder, replacement) {
+      const start = this.ed.value.indexOf(placeholder);
+      if (start < 0) return;
+      this.ed.setRangeText(replacement, start, start + placeholder.length, 'preserve');
+    },
+
+    async pasteImage(ev, generation) {
+      const imageItem = Array.from(ev.clipboardData?.items || []).find(
+        item => item.kind === 'file' && item.type.startsWith('image/')
       );
-      
-      this.editorField.addEventListener('paste', async ev => {
-        const imageItem = Array.from(ev.clipboardData?.items || []).find(
-          item => item.kind === 'file' && item.type.startsWith('image/')
-        );
-        const imageFile = imageItem?.getAsFile();
-        if (!imageFile) return;
+      const imageFile = imageItem?.getAsFile();
+      if (!imageFile) return;
 
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+
+      const token =
+        `journote-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const placeholder =
+        `![Immagine in caricamento](pending:${token})`;
+
+      this.ed.setRangeText(
+        placeholder,
+        this.ed.selectionStart,
+        this.ed.selectionEnd,
+        'end'
+      );
+      this.pendingImageUploads += 1;
+      this.updateImageUploadState();
+
+      const formData = new FormData();
+      formData.append(
+        'image',
+        imageFile,
+        imageFile.name || 'clipboard-image'
+      );
+
+      try {
+        const uploaded = await api.uploadImage(formData);
+        if (this.generation !== generation) return;
+
+        this.replacePlaceholder(placeholder, uploaded.markdown);
+        this.addStatus('Immagine inserita nella nota.', 'success');
+      } catch (error) {
+        if (this.generation !== generation) return;
+
+        this.replacePlaceholder(placeholder, '');
+        this.addStatus( `Immagine non inserita: ${error.message}`, 'error');
+      } finally {
+        if (this.generation === generation) {
+          this.pendingImageUploads -= 1;
+          this.updateImageUploadState();
+        }
+      }
+    },
+
+    async handleEditorKeydown(ev) {
+      if (ev.isComposing) return;
+
+      if (ev.key === 'Enter' && ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) {
+        const tag = this.getTagAtCursor();
+        if (!tag) return;
         ev.preventDefault();
         ev.stopImmediatePropagation();
+        if (!ev.repeat) await this.openTagPanel(tag.name);
+        return;
+      }
 
-        const token =
-          `journote-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const placeholder =
-          `![Immagine in caricamento](pending:${token})`;
+      if (ev.key === 'Enter' && ev.ctrlKey && !ev.altKey) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        await this.submitNote();
+        return;
+      }
 
+      if (ev.key === 'Tab' && !this.monacoEditor) {
+        ev.preventDefault();
         this.ed.setRangeText(
-          placeholder,
+          '  ',
           this.ed.selectionStart,
           this.ed.selectionEnd,
           'end'
         );
-        this.pendingImageUploads += 1;
-        this.updateImageUploadState();
+        return;
+      }
 
-        const formData = new FormData();
-        formData.append(
-          'image',
-          imageFile,
-          imageFile.name || 'clipboard-image'
+      if (ev.key === 'd' && ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        this.ed.setRangeText(
+          h.localDate(),
+          this.ed.value.length,
+          this.ed.value.length,
+          'end'
         );
+        return;
+      }
 
-        try {
-          const uploaded = await api.uploadImage(formData);
-          if (this.generation !== generation) return;
+      if (['b', 'i', 'k'].includes(ev.key) && ev.ctrlKey && !ev.altKey) {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        const marker = {b: '**', i: '*', k: '`'}[ev.key];
+        this.insertMarkdown(marker, marker);
+      }
+    },
 
-          const markerPosition = this.ed.value.indexOf(placeholder);
-          if (markerPosition >= 0) {
-            this.ed.setRangeText(
-              uploaded.markdown,
-              markerPosition,
-              markerPosition + placeholder.length,
-              'preserve'
-            );
-          }
-          this.addStatus('Immagine inserita nella nota.', 'success');
-        } catch (error) {
-          if (this.generation !== generation) return;
-
-          const markerPosition = this.ed.value.indexOf(placeholder);
-          if (markerPosition >= 0) {
-            this.ed.setRangeText(
-              '',
-              markerPosition,
-              markerPosition + placeholder.length,
-              'preserve'
-            );
-          }
-          this.addStatus( `Immagine non inserita: ${error.message}`, 'error');
-        } finally {
-          if (this.generation !== generation) return;
-          this.pendingImageUploads -= 1;
-          this.updateImageUploadState();
+    async ensureEditorLanguage(monaco) {
+      const id = this.languageId;
+      const registered = () => monaco.languages.getLanguages().some(item => item.id === id);
+      if (registered()) return;
+      const markdown = monaco.languages.getLanguages().find(item => item.id === 'markdown');
+      const {language, conf} = await markdown.loader();
+      // Un altro render potrebbe aver registrato il linguaggio durante il caricamento.
+      if (registered()) return;
+      monaco.languages.register({id});
+      monaco.languages.setLanguageConfiguration(id, conf);
+      monaco.languages.setMonarchTokensProvider(id, {
+        ...language,
+        tokenizer: {
+          ...language.tokenizer,
+          root: [
+            [/^ {0,3}#+(?![# ])/, ''],
+            [this.replyPattern, 'reply-reference'],
+            ...language.tokenizer.root
+          ]
         }
-      }, true);
+      });
+    },
 
-      this.editorField.addEventListener('keydown', async ev => {
-        if (ev.isComposing) return;
-
-        if (ev.key === 'd' && ev.ctrlKey && !ev.altKey && !ev.shiftKey && this.monacoEditor) {
-          ev.preventDefault();
-          ev.stopImmediatePropagation();
-          this.monacoEditor.getAction('editor.action.addSelectionToNextFindMatch').run();
-          return;
-        }
-
-        if (ev.key === 'Enter' && ev.ctrlKey && !ev.altKey) {
-          ev.preventDefault();
-          ev.stopImmediatePropagation();
-          if (this.pendingImageUploads) return;
-          if (this.currentNote) await this.editNote();
-          else await this.saveNote();
-          return;
-        }
-
-        if (ev.key === 'Tab' && !this.monacoEditor) {
-          ev.preventDefault();
-          this.ed.setRangeText(
-            '  ',
-            this.ed.selectionStart,
-            this.ed.selectionEnd,
-            'end'
-          );
-          return;
-        }
-
-        if (ev.key === 'd' && ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
-          ev.preventDefault();
-          ev.stopImmediatePropagation();
-          this.ed.setRangeText(
-            h.localDate(),
-            this.ed.value.length,
-            this.ed.value.length,
-            'end'
-          );
-          return;
-        }
-
-        if (['b', 'i', 'k'].includes(ev.key) && ev.ctrlKey && !ev.altKey) {
-          ev.preventDefault();
-          ev.stopImmediatePropagation();
-          const marker = ev.key.toLowerCase() === 'b'
-            ? '**'
-            : ev.key.toLowerCase() === 'i'
-              ? '*'
-              : '`';
-          this.insertMarkdown(marker, marker);
-        }
-      }, true);
-
-      // Build the controls synchronously; keep the textarea usable while loading.
-      // A stale render must never attach Monaco to a newer page.
+    async mountMonaco(generation) {
       const textarea = this.ed;
-      let editor;
-      let host;
+      const field = this.editorField;
+      const active = () => this.generation === generation && field.isConnected;
+      let editor, textModel, host, popupHost;
+      const resources = [];
+      let cleaned = false;
+      const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
+        for (const resource of resources.splice(0)) resource.dispose();
+        popupHost?.remove();
+        host?.remove();
+      };
+
       try {
         const monaco = await this.loadMonaco();
-        if (this.generation !== generation || !textarea.isConnected) return;
+        if (!active() || !textarea.isConnected) return;
+        await this.ensureEditorLanguage(monaco);
+        if (!active() || !textarea.isConnected) return;
 
         this.installEditorTheme(monaco);
+        // Leggi testo, selezione e focus dopo tutti gli await.
         const focused = document.activeElement === textarea;
         const start = textarea.selectionStart;
         const end = textarea.selectionEnd;
-
-        host = view.el('div', {
-          id: 'Editor',
-          className: 'journote-code-editor'
-        });
+        host = view.el('div', {id: 'Editor', className: 'journote-code-editor'});
         textarea.before(host);
-
-        // Prepara il Markdown personalizzato una sola volta.
-        const languageid = 'journote-markdown';
-
-        if (!monaco.languages.getLanguages().some(l => l.id === languageid)) {
-          const markdown = monaco.languages
-            .getLanguages()
-            .find(l => l.id === 'markdown');
-
-          const { language, conf } = await markdown.loader();
-
-          monaco.languages.register({ id: languageid });
-          monaco.languages.setLanguageConfiguration(languageid, conf);
-
-          monaco.languages.setMonarchTokensProvider(languageid, {
-            ...language,
-            tokenizer: {
-              ...language.tokenizer,
-              root: [
-                // # senza spazio dopo: testo normale, non titolo.
-                [/^ {0,3}#+(?![# ])/, ''],
-                ...language.tokenizer.root
-              ]
-            }
-          });
-        }
-
-        // Crea il modello usando il Markdown personalizzato.
-        const textModel = monaco.editor.createModel(
-          textarea.value,
-          languageid
-        );
-        this.monacoModel = textModel;
-
+        popupHost = document.createElement('div');
+        popupHost.className = 'monaco-editor monaco-component vs';
+        document.body.appendChild(popupHost);
+        textModel = monaco.editor.createModel(textarea.value, this.languageId);
         editor = monaco.editor.create(host, {
+          ...this.editorOptions,
+          theme: this.languageId,
           model: textModel,
-          theme: 'journote-markdown',
-          // automaticLayout: true,
-          fontSize: 14,
-          lineHeight: 22,
-          fontFamily: '"IBM Plex Mono", monospace',
-          minimap: {enabled: false},
-          wordWrap: 'on',
-          scrollBeyondLastLine: false,
-          lineNumbers: 'on',
-          glyphMargin: false,
-          folding: false,
-          lineNumbersMinChars: 3,
-          lineDecorationsWidth: 8,
-          overviewRulerLanes: 0,
-          hideCursorInOverviewRuler: true,
-          renderLineHighlight: 'all',
-          renderLineHighlightOnlyWhenFocus: true,
-          roundedSelection: true,
-          tabSize: 2,
-          insertSpaces: true,
-          detectIndentation: false,
-          multiCursorModifier: 'alt',
-          multiCursorMergeOverlapping: true,
-          quickSuggestions: false,
-          wordBasedSuggestions: 'off',
-          padding: {top: 0, bottom: 0},
-          ariaLabel: 'Testo della nota in Markdown',
-          scrollbar: {
-            vertical: 'auto',
-            horizontal: 'hidden',
-            alwaysConsumeMouseWheel: false
-          }
+          overflowWidgetsDomNode: popupHost
         });
+        editor.onDidDispose(cleanup);
 
-        if (document.fonts?.ready) {
-          document.fonts.ready.then(() => {
-            if (host.isConnected) monaco.editor.remeasureFonts();
-          });
-        }
-        this.attachAutocomplete(editor, monaco);
-
-        textarea.remove();
-        this.monacoEditor = editor;
-        this.ed = this.createEditorAdapter(editor, host, monaco);
-        this.ed.setSelectionRange(start, end);
-
-        const decorations = editor.createDecorationsCollection();
-        const highlightTags = () => {
-          const source = textModel.getValue();
-          const items = [];
-          // "# Title", "+ list" and "> quote" remain Markdown constructs.
-          const pattern = /(^|\s)([#@+>])([A-Za-z0-9_.-]+)/g;
-          let match;
-
-          while ((match = pattern.exec(source))) {
-            const offset = match.index + match[1].length;
-            const a = textModel.getPositionAt(offset);
-            const b = textModel.getPositionAt(
-              offset + match[2].length + match[3].length
-            );
-
-            items.push({
-              range: new monaco.Range(
-                a.lineNumber, a.column, b.lineNumber, b.column
-              ),
-              options: {
-                inlineClassName: {
-                  '#': 'jn-project',
-                  '+': 'jn-generic',
-                  '>': 'jn-event',
-                  '@': 'jn-person'
-                }[match[2]]
-              }
-            });
-          }
-          decorations.set(items);
-        };
-
-        editor.onDidChangeModelContent(() => {
-          highlightTags();
-        });
-
-        editor.addAction({
+        const loadPropertyCommand = editor.addCommand(0, () => this.loadProperty(editor));
+        resources.push(this.registerTagCompletions(editor, monaco));
+        resources.push(this.registerPropertyCompletions(editor, monaco, loadPropertyCommand));
+        resources.push(this.bindTagNavigation(editor, monaco, generation));
+        this.bindDecorations(editor, monaco, resources);
+        resources.push(editor.addAction({
           id: 'journote.next-occurrence',
           label: 'Aggiungi cursore alla prossima occorrenza',
           keybindings: [
@@ -1045,28 +1022,319 @@ const view = {
           run: ed => ed.getAction(
             'editor.action.addSelectionToNextFindMatch'
           ).run()
-        });
+        }));
 
-        highlightTags();
+        const adapter = this.createEditorAdapter(editor, host, monaco);
+        adapter.setSelectionRange(start, end);
+        textarea.remove();
+        this.monacoModel = textModel;
+        this.monacoEditor = editor;
+        this.ed = adapter;
         if (focused) editor.focus();
+
+        document.fonts?.ready.then(() => {
+          if (active() && host.isConnected) monaco.editor.remeasureFonts();
+        });
       } catch (error) {
-        if (this.generation !== generation) return;
+        // Rilascia soltanto le risorse di questa inizializzazione.
         editor?.dispose();
-        this.monacoModel?.dispose();
+        cleanup();
+        textModel?.dispose();
+        if (this.generation !== generation) return;
         this.monacoEditor = null;
         this.monacoModel = null;
-        host?.remove();
-
-        if (
-          this.generation !== generation ||
-          !this.editorField?.isConnected
-        ) return;
-
-        if (!textarea.isConnected) this.editorField.prepend(textarea);
         this.ed = textarea;
+        if (!field.isConnected) return;
+        if (!textarea.isConnected) field.prepend(textarea);
         console.warn('Monaco initialization failed:', error);
         this.addStatus('Impossibile caricare Monaco.', 'error');
       }
+    },
+
+    async loadProperty(editor) {
+      if (this.currentNote || this.pendingImageUploads || this.saving) return;
+
+      const textModel = editor.getModel();
+      if (!textModel) return;
+
+      const raw = textModel.getValue();
+      const match = raw.match(
+        /^(#[A-Za-z0-9_.-]+)\[([^\[\]\r\n]+)\]\s*$/
+      );
+      if (!match) return;
+
+      const [, tagName, key] = match;
+      const version = textModel.getVersionId();
+      const generation = this.generation;
+
+      try {
+        const response = await api.getTagProperties(tagName);
+
+        // Non sostituire testo modificato durante la richiesta.
+        if (
+          textModel.isDisposed() ||
+          this.generation !== generation ||
+          editor.getModel() !== textModel ||
+          textModel.getVersionId() !== version ||
+          this.currentNote ||
+          this.pendingImageUploads ||
+          this.saving
+        ) return;
+
+        const property = response.properties?.find(p => p.key === key);
+        if (!property) return;
+
+        this.startPropertyEdit(tagName, property.key, property.value);
+        this.addStatus(`Modifica proprietà: ${tagName}[${key}]`, 'success');
+      } catch (error) {
+        if (this.generation === generation) {
+          this.addStatus(
+            `Caricamento proprietà fallito: ${error.message}`,
+            'error'
+          );
+        }
+      }
+    },
+
+    registerTagCompletions(editor, monaco) {
+      const categories = this.tagTypes;
+      return monaco.languages.registerCompletionItemProvider(
+        editor.getModel().getLanguageId(),
+        {
+          triggerCharacters: Object.keys(categories),
+
+          provideCompletionItems(textModel, position, context, cancellation) {
+            // Restrict this provider to this Journote editor.
+            if (
+              cancellation.isCancellationRequested ||
+              textModel !== editor.getModel()
+            ) {
+              return {suggestions: []};
+            }
+
+            const line = textModel.getLineContent(position.lineNumber);
+            const beforeCursor = line.slice(0, position.column - 1);
+
+            // Match only a tag at the start of a line or after whitespace.
+            // Markdown headings ("# Title"), quotes ("> text"), lists ("+ item"),
+            // email addresses and property references do not match.
+            const match = beforeCursor.match(
+              /(?:^|\s)([#@+>][A-Za-z0-9_.-]*)$/
+            );
+
+            if (!match) return {suggestions: []};
+
+            const typedTag = match[1];
+            const prefix = typedTag[0];
+            const query = typedTag.toLowerCase();
+            const category = categories[prefix];
+
+            // Replace the complete tag even when the cursor is in its middle.
+            // Leave surrounding punctuation, whitespace and [property] intact.
+            const suffix = line
+              .slice(position.column - 1)
+              .match(/^[A-Za-z0-9_.-]*/)[0];
+
+            const range = new monaco.Range(
+              position.lineNumber,
+              position.column - typedTag.length,
+              position.lineNumber,
+              position.column + suffix.length
+            );
+
+            // Read the current application model on every request.
+            // Metadata refreshes therefore become available automatically.
+            const tags = model.get('tags') || [];
+            const seen = new Set();
+            const suggestions = [];
+
+            for (const tag of tags) {
+              const name = tag?.name;
+
+              if (
+                typeof name !== 'string' ||
+                name[0] !== prefix ||
+                !/^[#@+>][A-Za-z0-9_.-]+$/.test(name) ||
+                !name.toLowerCase().startsWith(query) ||
+                seen.has(name)
+              ) {
+                continue;
+              }
+
+              seen.add(name);
+
+              const details = [category.label];
+              if (tag.parent) details.push(`Parent: ${tag.parent}`);
+
+              suggestions.push({
+                label: {
+                  label: name,
+                  description: category.label
+                },
+                kind: monaco.languages.CompletionItemKind[category.kind],
+                detail: details.join(' · '),
+                filterText: name,
+                sortText: name.toLowerCase(),
+                insertText: name,
+                range
+              });
+            }
+            return {
+              suggestions,
+              incomplete: true
+            };
+          }
+        }
+      );
+    },
+
+    registerPropertyCompletions(editor, monaco, loadPropertyCommand) {
+      const owner = this;
+      return monaco.languages.registerCompletionItemProvider(
+        editor.getModel().getLanguageId(),
+        {
+          triggerCharacters: ['['],
+          provideCompletionItems(textModel, position, context, cancellation) {
+            if (
+              cancellation.isCancellationRequested ||
+              textModel !== editor.getModel() ||
+              owner.currentNote ||
+              position.lineNumber !== 1 ||
+              textModel.getLineCount() !== 1
+            ) return { suggestions: [] };
+
+            const line = textModel.getLineContent(1);
+            const before = line.slice(0, position.column - 1);
+            const match = before.match(
+              /^(#[A-Za-z0-9_.-]+)\[([^\[\]\r\n]*)$/
+            );
+            if (!match) return { suggestions: [] };
+
+            // Accetta anche la parentesi chiusa automaticamente da Monaco.
+            const after = line.slice(position.column - 1);
+            if (!/^[^\[\]\r\n]*\]?\s*$/.test(after)) {
+              return { suggestions: [] };
+            }
+
+            const [, tagName, query] = match;
+            const tag = (model.get('tags') || [])
+              .find(item => item.name === tagName);
+            return {
+              suggestions: (tag?.properties || [])
+                .filter(p => p.key.toLowerCase().startsWith(query.toLowerCase()))
+                .map(p => ({
+                  label: p.key,
+                  kind: monaco.languages.CompletionItemKind.Property,
+                  filterText: p.key,
+                  insertText: `${p.key}]`,
+                  range: {
+                    insert: new monaco.Range(
+                      1,
+                      position.column - query.length,
+                      1,
+                      position.column
+                    ),
+                    replace: new monaco.Range(
+                      1,
+                      position.column - query.length,
+                      1,
+                      line.length + 1
+                    )
+                  },
+                  command: {
+                    id: loadPropertyCommand,
+                    title: 'Carica proprietà'
+                  }
+                }))
+            };
+          }
+        }
+      );
+    },
+
+    findTags(text) {
+      return Array.from(text.matchAll(new RegExp(this.tagPattern)), match => ({
+        name: match[1],
+        start: match.index + match[0].length - match[1].length
+      }));
+    },
+
+    getTagAt(text, offset, includeEnd = false) {
+      return this.findTags(text).find(tag => {
+        const end = tag.start + tag.name.length;
+        return offset >= tag.start && (offset < end || (includeEnd && offset === end));
+      });
+    },
+
+    getTagAtCursor() {
+      if (this.monacoEditor) {
+        const textModel = this.monacoEditor.getModel();
+        const position = this.monacoEditor.getPosition();
+        if (!textModel || !position) return;
+        return this.getTagAt(
+          textModel.getLineContent(position.lineNumber), position.column - 1, true
+        );
+      }
+      if (!this.ed) return;
+      const offset = this.ed.selectionDirection === 'backward'
+        ? this.ed.selectionStart : this.ed.selectionEnd;
+      return this.getTagAt(this.ed.value, offset, true);
+    },
+
+    async openTagPanel(tagName, generation = this.generation) {
+      if (this.generation !== generation) return;
+      try {
+        await page.home.addTagview(tagName);
+        if (this.generation !== generation) return;
+        page.home.activateTagview(tagName);
+      } catch (error) {
+        if (this.generation === generation) {
+          this.addStatus(`Impossibile aprire ${tagName}: ${error.message}`, 'error');
+        }
+      }
+    },
+
+    bindTagNavigation(editor, monaco, generation) {
+      return editor.onMouseDown(async e => {
+        if (!e.event.ctrlKey || !e.event.leftButton ||
+            e.target.type !== monaco.editor.MouseTargetType.CONTENT_TEXT ||
+            !e.target.position) return;
+        const {lineNumber, column} = e.target.position;
+        const textModel = editor.getModel();
+        if (!textModel) return;
+        const tag = this.getTagAt(textModel.getLineContent(lineNumber), column - 1);
+        if (!tag) return;
+        e.event.preventDefault();
+        e.event.stopPropagation();
+        await this.openTagPanel(tag.name, generation);
+      });
+    },
+
+    bindDecorations(editor, monaco, resources) {
+      const tags = editor.createDecorationsCollection();
+      const reply = editor.createDecorationsCollection();
+      const update = () => {
+        const textModel = editor.getModel();
+        if (!textModel) return;
+        tags.set(this.findTags(textModel.getValue()).map(tag => {
+          const a = textModel.getPositionAt(tag.start);
+          const b = textModel.getPositionAt(tag.start + tag.name.length);
+          return {
+            range: new monaco.Range(a.lineNumber, a.column, b.lineNumber, b.column),
+            options: {inlineClassName: this.tagTypes[tag.name[0]].className}
+          };
+        }));
+        const match = textModel.getLineContent(1).match(this.replyPattern);
+        reply.set(match ? [{
+          range: new monaco.Range(1, 1, 1, match[0].length + 1),
+          options: {
+            inlineClassName: 'reply-reference-bg',
+            stickiness: monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges
+          }
+        }] : []);
+      };
+      resources.push(editor.onDidChangeModelContent(update));
+      update();
     },
 
     addStatus(message, state = 'info') {
@@ -1186,56 +1454,26 @@ const view = {
         accentStrong: this.readEditorColor('--accent-strong', '#1b5744'),
         accentSoft: this.readEditorColor('--accent-soft', '#e1eee7'),
         error: this.readEditorColor('--c-error', '#d34e4e'),
-        project: this.readEditorColor('--c-project', '#286b56'),
         event: this.readEditorColor('--c-event', '#366f91'),
-        generic: this.readEditorColor('--c-generic', '#a7503b'),
-        person: this.readEditorColor('--c-person', '#886414')
+        generic: this.readEditorColor('--c-generic', '#a7503b')
       };
 
       monaco.editor.defineTheme('journote-markdown', {
         base: 'vs',
         inherit: true,
         rules: [
-          {
-            token: '',
-            foreground: colors.ink.slice(1)
-          },
-          {
-            token: 'keyword',
-            foreground: colors.accentStrong.slice(1),
-            fontStyle: 'bold'
-          },
-          {
-            token: 'strong',
-            foreground: colors.ink.slice(1),
-            fontStyle: 'bold'
-          },
-          {
-            token: 'emphasis',
-            foreground: colors.ink.slice(1),
-            fontStyle: 'italic'
-          },
-          {
-            token: 'string',
-            foreground: colors.generic.slice(1)
-          },
-          {
-            token: 'string.link',
-            foreground: colors.event.slice(1)
-          },
-          {
-            token: 'variable',
-            foreground: colors.event.slice(1)
-          },
-          {
-            token: 'comment',
-            foreground: colors.muted.slice(1)
-          },
-          {
-            token: 'tag',
-            foreground: colors.accent.slice(1)
-          }
-        ],
+          ['', colors.ink],
+          ['keyword', colors.accentStrong, 'bold'],
+          ['strong', colors.ink, 'bold'],
+          ['emphasis', colors.ink, 'italic'],
+          ['string', colors.generic],
+          ['string.link', colors.event],
+          ['variable', colors.event],
+          ['comment', colors.muted],
+          ['tag', colors.accent]
+        ].map(([token, color, fontStyle]) => ({
+          token, foreground: color.slice(1), ...(fontStyle ? {fontStyle} : {})
+        })),
         colors: {
           'editor.background': colors.paper,
           'editor.foreground': colors.ink,
@@ -1355,149 +1593,11 @@ const view = {
       };
     },
 
-    attachAutocomplete(editor, monaco) {
-
-      editor.updateOptions({
-        suggestOnTriggerCharacters: true,
-        quickSuggestions: {
-          other: true,
-          comments: true,
-          strings: true
-        },
-        quickSuggestionsDelay: 100,
-        wordBasedSuggestions: 'off',
-        acceptSuggestionOnEnter: 'on',
-        acceptSuggestionOnCommitCharacter: false,
-        tabCompletion: 'off',
-        snippetSuggestions: 'none',
-        suggest: {
-          insertMode: 'replace',
-          showWords: false,
-          showSnippets: false,
-          preview: false,
-          selectionMode: 'always'
-        }
-      });
-
-      const categories = {
-        '#': {
-          label: 'Progetto',
-          kind: monaco.languages.CompletionItemKind.Folder
-        },
-        '@': {
-          label: 'Persona',
-          kind: monaco.languages.CompletionItemKind.User
-        },
-        '>': {
-          label: 'Evento',
-          kind: monaco.languages.CompletionItemKind.Event
-        },
-        '+': {
-          label: 'Tag generico',
-          kind: monaco.languages.CompletionItemKind.Keyword
-        }
-      };
-
-      const provider = monaco.languages.registerCompletionItemProvider(
-        'markdown',
-        {
-          triggerCharacters: ['#', '@', '>', '+'],
-
-          provideCompletionItems(textModel, position, context, cancellation) {
-            // Restrict this provider to this Journote editor.
-            if (
-              cancellation.isCancellationRequested ||
-              textModel !== editor.getModel()
-            ) {
-              return {suggestions: []};
-            }
-
-            const line = textModel.getLineContent(position.lineNumber);
-            const beforeCursor = line.slice(0, position.column - 1);
-
-            // Match only a tag at the start of a line or after whitespace.
-            // Markdown headings ("# Title"), quotes ("> text"), lists ("+ item"),
-            // email addresses and property references do not match.
-            const match = beforeCursor.match(
-              /(?:^|\s)([#@+>][A-Za-z0-9_.-]*)$/
-            );
-
-            if (!match) return {suggestions: []};
-
-            const typedTag = match[1];
-            const prefix = typedTag[0];
-            const query = typedTag.toLowerCase();
-            const category = categories[prefix];
-
-            // Replace the complete tag even when the cursor is in its middle.
-            // Leave surrounding punctuation, whitespace and [property] intact.
-            const suffix = line
-              .slice(position.column - 1)
-              .match(/^[A-Za-z0-9_.-]*/)[0];
-
-            const range = new monaco.Range(
-              position.lineNumber,
-              position.column - typedTag.length,
-              position.lineNumber,
-              position.column + suffix.length
-            );
-
-            // Read the current application model on every request.
-            // Metadata refreshes therefore become available automatically.
-            const tags = model.get('tags') || [];
-            const seen = new Set();
-            const suggestions = [];
-
-            for (const tag of tags) {
-              const name = tag?.name;
-
-              if (
-                typeof name !== 'string' ||
-                name[0] !== prefix ||
-                !/^[#@+>][A-Za-z0-9_.-]+$/.test(name) ||
-                !name.toLowerCase().startsWith(query) ||
-                seen.has(name)
-              ) {
-                continue;
-              }
-
-              seen.add(name);
-
-              const details = [category.label];
-              if (tag.parent) details.push(`Parent: ${tag.parent}`);
-
-              suggestions.push({
-                label: {
-                  label: name,
-                  description: category.label
-                },
-                kind: category.kind,
-                detail: details.join(' · '),
-                filterText: name,
-                sortText: name.toLowerCase(),
-                insertText: name,
-                range
-              });
-            }
-
-            return {
-              suggestions,
-              incomplete: true
-            };
-          }
-        }
-      );
-
-      // Remove the provider when navigating away or recreating the editor.
-      const disposeListener = editor.onDidDispose(() => {
-        provider.dispose();
-        disposeListener.dispose();
-      });
-    },
-
     dispose() {
       this.generation = (this.generation || 0) + 1;
       this.saving = false;
+      this.editorEvents?.abort();
+      this.editorEvents = null;
       this.monacoEditor?.dispose();
       this.monacoModel?.dispose();
       this.monacoEditor = null;
@@ -1602,8 +1702,6 @@ const view = {
 
     startPropertyEdit(tagName, key, value) {
       if (!this.clear()) return;
-      // The `#tag[key] value` syntax is detected by businessLogic.saveNote
-      // and saved as a tag property instead of a note.
       this.ed.value = `${tagName}[${key}]\n${value ?? ''}`;
       this.ed.focus();
       this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
@@ -1620,7 +1718,17 @@ const view = {
     renderEditNote(note) {
       if (this.pendingImageUploads) return;
       this.currentNote = note;
-      this.ed.value = note.text;
+      const text = note.text ?? '';
+      const replyPrefix = note.replied_to
+        ? `<R:${note.replied_to}`
+        : '';
+
+      this.ed.value = replyPrefix && !(
+        text === replyPrefix || text.startsWith(`${replyPrefix} `) ||
+        text.startsWith(`${replyPrefix}\n`)
+      )
+        ? `${replyPrefix} ${text}`
+        : text;
       this.ed.focus();
       h.eid('EditorSaveBtn').style.display = 'none';
       h.eid('EditorUpdateBtn').style.display = 'block';
@@ -1661,6 +1769,7 @@ const view = {
               ? `${leadingTags.join(' ')} `
               : '';
           }
+          this.ed.setSelectionRange(this.ed.value.length, this.ed.value.length);
           this.addStatus('Nota salvata.', 'success');
         }
         businessLogic.addActionRequiredTags(
@@ -2143,9 +2252,14 @@ const view = {
               ? 'Risponde a un\'altra nota'
               : 'Nessuna nota a cui risponde',
             tabindex: n.replied_to ? 0 : -1,
-            onclick: () => {
+            onclick: (ev) => {
+              ev.stopPropagation();
               if (n.replied_to) {
-                view.Main.openRelatedNote(
+                if (elNoteItem.classList.contains('replied_to-open')) {
+                  return
+                }
+                elNoteItem.classList += 'replied_to-open'
+                view.Main.openRelatedNote(  
                   n.replied_to,
                   'above',
                   elNoteItem
@@ -2169,11 +2283,14 @@ const view = {
                 : 'Nessuna risposta',
               tabindex: n.reply ? 0 : -1,
               onclick: ev => {
+                ev.stopPropagation();
                 if (n.reply) {
-                  ev.stopPropagation();
+                  if (elNoteItem.classList.contains('reply-open')) {
+                    return
+                  }
+                  elNoteItem.classList += 'reply-open'
                   view.Main.openRelatedNote(n.reply, 'below', elNoteItem);
                 } else {
-                  ev.stopPropagation();
                   view.EditorWrap.startReply(n);
                 }
               }
@@ -2371,7 +2488,7 @@ const view = {
 
     toggleMaximizeTab(tag) {
       const column = this.el_cw?.querySelector(`.column[data-key="${CSS.escape(tag)}"]`);
-      column?.classList.toggle('fullwidth');
+      // column?.classList.toggle('fullwidth');
     },
 
     editedNote(note, previousTags = [], previousDate = note.date) {
@@ -2664,7 +2781,6 @@ const view = {
       const header = view.el('div', {
         className: "tagtree-box " +tag.category
       });
-      header.style.borderRadius = '2px';
 
       const hasChildren = tag.children && tag.children.length > 0;
       const toggleBtn = header.appendChild(view.el('i', {
@@ -3990,7 +4106,7 @@ async function router() {
 (async () => {
   document.addEventListener('keydown', ev => {
     if(ev.repeat) return;
-    console.log('Pressed key:',
+    console.debug('Pressed key:',
         ev.key, ' | ',
         ev.altKey ? 'ALT ' : '', 
         ev.ctrlKey ? 'CTRL ' : '',
@@ -4048,12 +4164,7 @@ async function router() {
       }
       if (ev.key === 'm') {
         ev.preventDefault();
-        if(view.EditorWrap.isFocused()) {
-          view.EditorWrap.toggleMaximize();
-        } else {
-          const activeTab = model.get('tagsActive');
-          if (activeTab) view.Main.toggleMaximizeTab(activeTab);
-        }
+        view.EditorWrap.toggleMaximize();
       }
       if (ev.key === 'b') {
         ev.preventDefault();
