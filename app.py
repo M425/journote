@@ -617,15 +617,36 @@ def folder_path(value):
         raise ValueError("The selected path is not a folder")
     return path
 
+import os
+import subprocess
 
 def open_project_file(path):
-    """Open a file using MobaXterm's open command."""
+    """Open a file with its associated Windows application from MobaXterm."""
     try:
-        subprocess.Popen(["open", str(path)])
-    except FileNotFoundError:
-        return json_error(501, 'The open command is not available')
-    except OSError:
-        return json_error(400, 'Could not open the file')
+        path = os.path.abspath(str(path))
+
+        if os.path.exists("/bin/cygstart.exe"):
+            # Native Cygwin launcher
+            subprocess.Popen([
+                "/bin/cygstart.exe",
+                path
+            ])
+        else:
+            # Convert Cygwin path to Windows path
+            windows_path = subprocess.check_output(
+                ["/bin/toybox.exe", "convpath", "-w", path],
+                text=True
+            ).strip()
+
+            # MobaXterm Windows launcher
+            subprocess.Popen([
+                "/bin/MobaBox.exe",
+                "open",
+                windows_path
+            ])
+
+    except (OSError, subprocess.CalledProcessError) as error:
+        return json_error(400, f'Could not open file: {error}')
 
     return jsonify({'status': 'open_requested'})
 
