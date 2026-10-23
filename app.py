@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from flask import Flask, request, jsonify, abort, render_template, send_from_directory, send_file
 from flask_cors import CORS
 import os, time, uuid, sys
@@ -618,18 +619,15 @@ def folder_path(value):
 
 
 def open_project_file(path):
-    """Ask Windows to open a validated regular file with its associated app."""
-    startfile = getattr(os, 'startfile', None)
-    if startfile is None:
-        return json_error(501, 'Opening files in the default app is available only on Windows')
+    """Open a file using MobaXterm's open command."""
     try:
-        startfile(str(path), 'open')
-    except OSError as error:
-        if getattr(error, 'winerror', None) == 1155:
-            return json_error(409, 'No default application is associated with this file type in Windows')
-        return json_error(400, 'Windows could not open this file; check its permissions and default application')
-    return jsonify({'status': 'open_requested'})
+        subprocess.Popen(["open", str(path)])
+    except FileNotFoundError:
+        return json_error(501, 'The open command is not available')
+    except OSError:
+        return json_error(400, 'Could not open the file')
 
+    return jsonify({'status': 'open_requested'})
 
 def project_file_preview(path):
     """Read bounded local bytes; never execute or render active documents as HTML."""
