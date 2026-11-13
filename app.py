@@ -88,6 +88,37 @@ def find_tag_in_text(text: str):
                 tags.append(word)
     return tags
 
+def extract_date(text):
+    """Detect task priority and remove leading or space-preceded exclamation marks from text."""
+    cleaned = text
+    date = None
+
+    # Regex: match '!!!', '!!', or '!' at start or after a space
+    match = re.search(r'(^)(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', text)
+    if match:
+        match_date = match.group(2)
+        if match_date:
+            if match_date == "today":
+                date = datetime.now().date().isoformat()[:10]
+            elif match_date == "tomorrow":
+                date = (datetime.now().date() + timedelta(days=1)).isoformat()[:10]
+            elif match_date == "week":
+                date = (datetime.now().date() + timedelta(days=7)).isoformat()[:10]
+            elif len(match_date) == 5:
+                date = f'{datetime.now().year}-{match_date}'
+            elif len(match_date) == 8:
+                date = datetime.strptime(match_date, '%y-%m-%d').isoformat()[:10]
+            elif len(match_date) == 10:
+                date = datetime.strptime(match_date, '%Y-%m-%d').isoformat()[:10]
+
+        cleaned = re.sub(r'(^)(\d\d-\d\d-\d\d|\d\d\d\d-\d\d-\d\d|\d\d-\d\d|today|tomorrow|week)?', lambda m: m.group(1), text, count=1)
+        # cleaned += ' ' + match.group(0).strip()
+    cleaned = cleaned.strip()
+
+    if date == None:
+        date = datetime.now().date().isoformat()[:10]
+    return date, cleaned
+
 def extract_task_priority(text):
     """Detect task priority and remove leading or space-preceded exclamation marks from text."""
     cleaned = text
@@ -338,6 +369,14 @@ def api_get_image(image_id):
             return send_file(image_path, mimetype=mimetype, as_attachment=False, conditional=True)
     abort(404)
 
+@app.route("/api/notes", methods=["GET"])
+def api_get_notes():
+    notes = STORE.select_notes(limit=100, order_by="n.date desc")
+    date = notes[-1]['date']
+    events = STORE.select_tags(where="date > ?", params=(date,), order_by="date desc")
+    return jsonify({"notes": notes, "events": events}
+    )
+
 @app.route("/api/notes/<category>/<anonTag>", methods=["GET"])
 def api_get_tagged_notes(category, anonTag):
     logger.debug(f"Getting notes for category {category} and tag {anonTag}")
@@ -365,52 +404,13 @@ def api_get_tagged_notes(category, anonTag):
         if child_obj and child_obj['category'] == "Events":
             events.append(child_obj)
     return jsonify({"notes": notes, "events": events})
-
+  
 @app.route("/api/notes/<note_id>", methods=["GET"])
 def api_get_note(note_id):
     note = STORE.get_note(note_id)
     if not note:
         return jsonify({"error": "Not found"}), 404
     return jsonify(note)
-
-@app.route("/api/notes", methods=["POST"])
-def api_add_note():
-    data = require_json()
-    if not isinstance(data.get("text"), str) or not data["text"].strip():
-        return json_error(400, "text must be a non-empty string")
-    tags = find_tag_in_text(data["text"])
-    priority, duedate, cleaned_text = extract_task_priority(data["text"])
-    parent_id, cleaned_text = extract_reply_reference(cleaned_text)
-
-    note_id = uuid.uuid4().hex[-SHORT_NOTE_ID_LENGTH:]
-    while STORE.get_note(note_id) is not None:
-        note_id = uuid.uuid4().hex[-SHORT_NOTE_ID_LENGTH:]
-
-    note = {
-        "id": note_id,
-        "timestamp": int(time.time() * 1000),
-        "date": data.get("date") or datetime.now().date().isoformat(),
-        "text": cleaned_text,
-        "task": priority,
-        "tags": tags,
-        "duedate": duedate,
-        "replied_to": parent_id,
-    }
-    STORE.add_note(note)
-    if parent_id:
-        STORE.patch_note(parent_id, {"reply": note["id"]})
-
-    # Process regular tags
-    for tag in tags:
-        if STORE.get_tag(tag) is None:
-            STORE.add_tag({
-                "name": tag,
-                "category": categorize_tag(tag),
-                "treed": False,
-                "parent": None,
-                "date": data.get("date") or None
-            })
-    return jsonify({"status": "created", "note": note}), 201
 
 @app.route("/api/notes/<note_id>", methods=["DELETE"])
 def api_delete_note(note_id):
@@ -426,29 +426,29 @@ def api_delete_note(note_id):
             STORE.delete_tag(tag)
     return jsonify({"status": "deleted", "removed_tags": removed_tags})
 
-@app.route("/api/notes/<note_id>", methods=["PATCH"])
-def api_patch_note(note_id):
+@app.route("/api/notes", methods=["PUT"])
+def api_put_note():
     data = request.get_json()
+    status = ''
+    status_parent = ''
     if not data or "text" not in data:
         return jsonify({"error": "Missing text"}), 400
-    note = STORE.get_note(note_id)
-    if not note:
-        return jsonify({"error": "Not found"}), 404
+    if 'id' in data:
+        note = STORE.get_note(data['id'])
+    else:
+        note = {"id": False, "text": "", "tags": []}
+    old_tags = note["tags"]
 
-    priority, duedate, cleaned_text = extract_task_priority(data["text"])
+    date, cleaned_text = extract_date(data["text"])
+    priority, duedate, cleaned_text = extract_task_priority(cleaned_text)
     parent_id, cleaned_text = extract_reply_reference(cleaned_text)
+    
     note["task"] = priority
     note['duedate'] = duedate
     note["replied_to"] = parent_id
-
-    old_text = note["text"]
-    old_tags = note["tags"]
     note["text"] = cleaned_text
     note["tags"] = find_tag_in_text(cleaned_text)
-    note['date'] = data.get("date", note['date'])
-    STORE.patch_note(note_id, note)
-    if parent_id:
-        STORE.patch_note(parent_id, {"reply": note_id})
+    note['date'] = date
 
     added_tags, removed_tags = compare_tags(old_tags, note["tags"])
     logger.info(f"Added tags: {added_tags}, Removed tags: {removed_tags}")
@@ -456,6 +456,22 @@ def api_patch_note(note_id):
     for tag in added_tags:
         if STORE.get_tag(tag) is None:
             any_new_tag.append(STORE.add_tag({"name": tag, "category": categorize_tag(tag), "treed": False, "parent": None, "date": data.get("date") or None}))
+
+    if note['id']:
+        STORE.patch_note(note['id'], note)
+        status = 'update'
+    else:
+        note_id = uuid.uuid4().hex[-SHORT_NOTE_ID_LENGTH:]
+        while STORE.get_note(note_id) is not None:
+            note_id = uuid.uuid4().hex[-SHORT_NOTE_ID_LENGTH:]
+        note['id'] = note_id
+        STORE.add_note(note)
+        status = 'create'
+
+    if parent_id:
+        STORE.patch_note(parent_id, {"reply": note['id']})
+        status_parent = "update"
+
     any_removed_tag = []
     for tag in removed_tags:
         if not STORE.select_notes(
@@ -463,7 +479,13 @@ def api_patch_note(note_id):
             "WHERE filter_tags.note_id = n.id AND filter_tags.tag_name = ?)", (tag,), limit=1,
         ) and STORE.get_tag(tag)['content'] == '':
             any_removed_tag.append(STORE.delete_tag(tag))
-    return jsonify({"status": "patched", "note": note, "new_tags": any_new_tag, "removed_tags": any_removed_tag})
+    return jsonify({
+        "status": status,
+        "note": note,
+        "new_tags": any_new_tag,
+        "removed_tags": any_removed_tag,
+        "status_parent": status_parent
+    })
 
 @app.route("/api/notes/<year>/<month>/count", methods=["GET"])
 def api_get_note_counts(year, month):
@@ -620,36 +642,6 @@ def folder_path(value):
 import os
 import subprocess
 
-def open_project_file(path):
-    """Open a file with its associated Windows application from MobaXterm."""
-    try:
-        path = os.path.abspath(str(path))
-
-        if os.path.exists("/bin/cygstart.exe"):
-            # Native Cygwin launcher
-            subprocess.Popen([
-                "/bin/cygstart.exe",
-                path
-            ])
-        else:
-            # Convert Cygwin path to Windows path
-            windows_path = subprocess.check_output(
-                ["/bin/toybox.exe", "convpath", "-w", path],
-                text=True
-            ).strip()
-
-            # MobaXterm Windows launcher
-            subprocess.Popen([
-                "/bin/MobaBox.exe",
-                "open",
-                windows_path
-            ])
-
-    except (OSError, subprocess.CalledProcessError) as error:
-        return json_error(400, f'Could not open file: {error}')
-
-    return jsonify({'status': 'open_requested'})
-
 def project_file_preview(path):
     """Read bounded local bytes; never execute or render active documents as HTML."""
     from io import BytesIO
@@ -700,83 +692,286 @@ def project_file_preview(path):
     response.headers['Content-Security-Policy'] = "sandbox; default-src 'none'"
     return response
 
-
 def folder_listing(path, root=None, directories_only=False):
     entries = []
+
     for child in path.iterdir():
         try:
             resolved = child.resolve(strict=True)
+
             if root is not None and not resolved.is_relative_to(root):
-                continue  # Do not follow junctions/symlinks outside the linked folder.
+                # Non seguire junction/symlink fuori dalla cartella collegata.
+                continue
+
             directory = child.is_dir()
+
             if directories_only and not directory:
                 continue
-            entries.append({"name": child.name, "directory": directory,
-                            "path": str(child.relative_to(root)) if root else str(child)})
+
+            entries.append({
+                "name": child.name,
+                "directory": directory,
+                "path": (
+                    str(child.relative_to(root))
+                    if root is not None
+                    else str(child)
+                ),
+                "mtime": child.stat().st_mtime,
+            })
+
         except OSError:
             continue
-    entries.sort(key=lambda entry: (not entry["directory"], entry["name"].casefold()))
-    parent = (str(path.parent.relative_to(root)) if path != root else None) if root else (
-        str(path.parent) if path.parent != path else "")
-    return {"path": str(path), "relative": str(path.relative_to(root)) if root else "",
-            "parent": parent, "entries": entries, "linked": root is not None}
+
+    entries.sort(
+        key=lambda entry: (
+            not entry["directory"],
+            entry["name"].casefold(),
+        )
+    )
+
+    if root is not None:
+        parent = (
+            str(path.parent.relative_to(root))
+            if path != root
+            else None
+        )
+        relative = str(path.relative_to(root))
+    else:
+        parent = str(path.parent) if path.parent != path else ""
+        relative = ""
+
+    return {
+        "path": str(path),
+        "relative": relative,
+        "parent": parent,
+        "entries": entries,
+        "linked": root is not None,
+    }
+
+def open_project_file(path):
+    """Apre il file con l'applicazione associata di Windows."""
+
+    try:
+        file_path = Path(path).resolve(strict=True)
+
+        if not file_path.is_file():
+            return json_error(400, "Seleziona un file regolare")
+
+    except FileNotFoundError:
+        return json_error(
+            404,
+            "File non trovato: potrebbe essere stato spostato o eliminato"
+        )
+    except PermissionError:
+        return json_error(403, "Accesso al file negato")
+    except (OSError, ValueError, TypeError) as error:
+        return json_error(
+            400,
+            f"Impossibile verificare il file: {error}"
+        )
+
+    if os.name != "nt":
+        return json_error(
+            501,
+            "L'apertura richiede Python nativo Windows. "
+            "Avvia Flask con python.exe dell'ambiente Windows."
+        )
+
+    try:
+        # Nessun launcher MobaXterm e nessuna conversione del percorso.
+        os.startfile(str(file_path), "open")
+
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1155:
+            return json_error(
+                400,
+                "Nessuna applicazione associata a questo tipo di file. "
+                "Configura l'app predefinita in Windows."
+            )
+
+        return json_error(
+            400,
+            f"Impossibile aprire '{file_path}': {error}"
+        )
+
+    return jsonify({
+        "status": "open_requested"
+    })
 
 
-@app.route("/api/tags/<category>/<anonTag>/folder/<action>", methods=["POST"])
+@app.route(
+    "/api/tags/<category>/<anonTag>/folder/<action>",
+    methods=["POST"]
+)
 def api_project_folder(category, anonTag, action):
     require_local_folder_request()
+
     if category != "Projects":
-        return json_error(400, "Only projects can link a folder")
+        return json_error(
+            400,
+            "Only projects can link a folder"
+        )
+
     tag = "#" + anonTag
+
     if STORE.get_tag(tag) is None:
         return json_error(404, "Project not found")
+
     data = require_json()
+
     try:
         if action == "browse":
             value = data.get("path", "")
+
             if value == "":
-                roots = [Path(f"{letter}:/") for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"] if os.name == "nt" else [Path("/")]
-                return jsonify({"path": None, "parent": None, "entries": [
-                    {"name": str(root), "path": str(root), "directory": True}
-                    for root in roots if root.is_dir()]})
-            return jsonify(folder_listing(folder_path(value), directories_only=True))
+                roots = (
+                    [
+                        Path(f"{letter}:/")
+                        for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    ]
+                    if os.name == "nt"
+                    else [Path("/")]
+                )
+
+                return jsonify({
+                    "path": None,
+                    "parent": None,
+                    "entries": [
+                        {
+                            "name": str(root),
+                            "path": str(root),
+                            "directory": True
+                        }
+                        for root in roots
+                        if root.is_dir()
+                    ]
+                })
+
+            return jsonify(
+                folder_listing(
+                    folder_path(value),
+                    directories_only=True
+                )
+            )
+
         if action == "link":
             path = folder_path(data.get("path"))
-            # Ensure the selected directory is readable before persisting it.
+
+            # Verifica la leggibilità prima di salvare il collegamento.
             with os.scandir(path):
                 pass
-            STORE.set_tag_property(tag, PROJECT_FOLDER_KEY, str(path))
-            return jsonify({"path": str(path), "linked": True})
+
+            STORE.set_tag_property(
+                tag,
+                PROJECT_FOLDER_KEY,
+                str(path)
+            )
+
+            return jsonify({
+                "path": str(path),
+                "linked": True
+            })
+
         if action in {"files", "preview", "open"}:
             properties = STORE.get_tag_properties(tag)
-            value = next((item["value"] for item in properties if item["key"] == PROJECT_FOLDER_KEY), "")
+
+            value = next(
+                (
+                    item["value"]
+                    for item in properties
+                    if item["key"] == PROJECT_FOLDER_KEY
+                ),
+                ""
+            )
+
             if not value:
                 if action in {"preview", "open"}:
-                    return json_error(404, "No folder linked to this project")
-                return jsonify({"path": None, "parent": None, "entries": [], "linked": False})
-            root = folder_path(value)
+                    return json_error(
+                        404,
+                        "No folder linked to this project"
+                    )
+
+                return jsonify({
+                    "path": None,
+                    "parent": None,
+                    "entries": [],
+                    "linked": False
+                })
+
+            root = folder_path(value).resolve(strict=True)
             relative = data.get("relative", "")
-            if not isinstance(relative, str) or "\x00" in relative or Path(relative).is_absolute() or Path(relative).drive:
+
+            if (
+                not isinstance(relative, str)
+                or "\x00" in relative
+                or Path(relative).is_absolute()
+                or Path(relative).drive
+            ):
                 raise ValueError("Invalid relative folder path")
+
             path = (root / relative).resolve(strict=True)
+
             if not path.is_relative_to(root):
-                return json_error(403, "The folder is outside this project's linked folder")
+                return json_error(
+                    403,
+                    "The folder is outside this project's linked folder"
+                )
+
             if action in {"preview", "open"}:
                 if not path.is_file():
-                    return json_error(400, "Select a regular file")
-                return open_project_file(path) if action == "open" else project_file_preview(path)
-            return jsonify(folder_listing(folder_path(str(path)), root=root))
+                    return json_error(
+                        400,
+                        "Select a regular file"
+                    )
+
+                if action == "open":
+                    return open_project_file(path)
+
+                return project_file_preview(path)
+
+            return jsonify(
+                folder_listing(
+                    folder_path(str(path)),
+                    root=root
+                )
+            )
+
         return json_error(404, "Unknown folder action")
+
     except (ValueError, TypeError):
-        return json_error(400, "Invalid folder path or property value")
+        return json_error(
+            400,
+            "Invalid folder path or property value"
+        )
+
     except FileNotFoundError:
-        return json_error(404, "Folder not found; it may have been moved or disconnected")
+        return json_error(
+            404,
+            "Folder not found; it may have been moved or disconnected"
+        )
+
     except PermissionError:
-        return json_error(403, "Permission denied for this folder")
+        return json_error(
+            403,
+            "Permission denied for this folder"
+        )
+
     except OSError:
-        return json_error(400, "Cannot read this folder")
+        return json_error(
+            400,
+            "Cannot read this folder"
+        )
 
-
+@app.route("/modules")
+def get_modules():
+    modules_dir = Path(__file__).resolve().parent / "static/js/modules"
+    print(modules_dir)
+    files = sorted(
+        file.name
+        for file in modules_dir.glob("*.js")
+        if file.is_file()
+    )
+    return jsonify(files)
 # ---------------------------
 # Dev entrypoint
 # ---------------------------

@@ -1,0 +1,180 @@
+/* ==========================================================================
+   elems.css — Token di design e pulsanti condivisi.
+   Layout e componenti: styles.css.
+   Caricare questo file prima di styles.css.
+   ========================================================================== */
+
+/* #region 01 - Token di design */
+:root {
+  /* Spaziatura e tipografia */
+  --gap: 6px;
+  --font-body: "IBM Plex Mono", "Cascadia Mono", monospace;
+  --font-code: var(--font-body);
+  --font-size-base: 14px;
+  font-size: var(--font-size-base);
+
+  /* Palette: base, accento (-a), chiaro (-l), scuro (-d) */
+  --c-standard: #7791cf;
+  --c-standard-a: #8acbff;
+  --c-standard-l: #e0eaff;
+  --c-standard-d: #4160a4;
+
+  --c-primary: #1976d2;
+  --c-primary-l: #eaf4ff;
+  --c-primary-d: #175492;
+
+  --c-secondary: #31a7ae;
+  --c-secondary-a: #dffdff;
+  --c-secondary-l: #e1f2f4;
+  --c-secondary-d: #17686c;
+
+  --c-warning: #b7ad20;
+  --c-warning-l: #faf8cc;
+  --c-warning-d: #534e09;
+
+  --c-error: #d34e4e;
+  --c-error-l: #f6d4d4;
+  --c-error-d: #8b2727;
+
+  --c-muted: #a7a6a6;
+  --c-muted-l: #f4f8f5;
+  --c-muted-d: #676767;
+
+  --brown-l: #f8f7f4;
+  
+  /* Categorie dei tag */
+  --c-project: #286b56;
+  --c-project-l: #e1eee7;
+  --c-event: #366f91;
+  --c-event-l: #e4eff5;
+  --c-generic: #a7503b;
+  --c-generic-l: #fff0e9;
+  --c-person: #886414;
+  --c-person-l: #f8f0d9;
+  --c-task: #7a1488;
+  --c-task-l: #e8c0ed;
+
+  /* Tema semantico Journote */
+  --accent: var(--c-project);
+  --accent-strong: #1b5744;
+  --accent-soft: var(--c-project-l);
+  --signal: #d2644f;
+  --signal-soft: var(--c-generic-l);
+  --gold: #bd8b22;
+  --gold-soft: var(--c-person-l);
+  --bg: var(--c-muted-l);
+  --bg-d1: #dee7e0;
+  --bg-d2: #bccbc2;
+  --paper: #ffffff;
+  --paper-muted: #f6f9f7;
+  --ink: #25332d;
+  --muted: #68766f;
+  --border: #d8e2dc;
+  --darker: #00000015;
+
+  /* Alias mantenuti per i componenti esistenti */
+  --base-bg-d: var(--bg-d2);
+  --primary: var(--c-primary);
+
+  /* Controlli e interazione */
+  --control-border: #aaaaaa;
+  --control-radius: 0px;
+  --control-padding: 3px 7px;
+  --control-padding-small: 1px 4px;
+  --control-focus: var(--accent);
+  --control-focus-width: 2px;
+  --control-focus-offset: 2px;
+  --control-disabled-opacity: 0.5;
+  --control-transition-duration: 140ms;
+  --control-hover-brightness: 0.97;
+  --control-on-active: #ffffff;
+}
+/* #endregion */
+
+/* #region 02 - Utility colore */
+.color--c-error { color: var(--c-error); }
+.color--c-error-d { color: var(--c-error-d); }
+
+/* I token locali vengono inizializzati su ogni pulsante per evitare
+   di ereditare accidentalmente la variante da un contenitore. */
+.btn {
+  border: 1px solid;
+  padding: 4px 7px;
+  --btn-tone: var(--c-standard);
+  --btn-soft: var(--c-standard-l);
+  --btn-ink: var(--c-standard-d);
+  --btn-active: var(--c-standard-d);
+  background: var(--btn-soft);
+  color: var(--btn-ink);
+  cursor: pointer;
+  transition:
+    background-color var(--control-transition-duration) ease,
+    border-color var(--control-transition-duration) ease,
+    color var(--control-transition-duration) ease;
+}
+
+/* #endregion */
+
+/* #region 04 - Varianti semantiche condivise */
+.btn.primary { color: var(--c-primary); --btn-tone: var(--c-primary); --btn-soft: var(--c-primary-l); --btn-ink: var(--c-primary-d); --btn-active: var(--c-primary-d); }
+.btn.secondary { color: var(--c-secondary); --btn-tone: var(--c-secondary); --btn-soft: var(--c-secondary-l); --btn-ink: var(--c-secondary-d); --btn-active: var(--c-secondary-d); }
+.btn.warning { color: var(--c-warning); --btn-tone: var(--c-warning); --btn-soft: var(--c-warning-l); --btn-ink: var(--c-warning-d); --btn-active: var(--c-warning-d); }
+.btn.error { color: var(--c-error); --btn-tone: var(--c-error); --btn-soft: var(--c-error-l); --btn-ink: var(--c-error-d); --btn-active: var(--c-error-d); }
+.btn.muted { color: var(--c-muted); --btn-tone: var(--c-muted); --btn-soft: var(--c-muted-l); --btn-ink: var(--c-muted-d); --btn-active: var(--c-muted-d); }
+.btn:is(.primary, .secondary, .warning, .error, .muted) { border-color: var(--btn-tone); }
+
+.btn.project { background-color: var(--c-project-l); color: var(--c-project); border: 1px solid var(--c-project); }
+.btn.generic { background-color: var(--c-generic-l); color: var(--c-generic); border: 1px solid var(--c-generic); }
+.btn.event { background-color: var(--c-event-l); color: var(--c-event); border: 1px solid var(--c-event); }
+.btn.person { background-color: var(--c-person-l); color: var(--c-person); border: 1px solid var(--c-person); }
+.btn.task { background-color: var(--c-task-l); color: var(--c-task); border: 1px solid var(--c-task); }
+
+.btn.project.active { background-color: var(--c-project); color: var(--paper); border: 1px solid var(--c-project-l); }
+.btn.generic.active { background-color: var(--c-generic); color: var(--paper); border: 1px solid var(--c-generic-l); }
+.btn.event.active { background-color: var(--c-event); color: var(--paper); }
+.btn.person.active { background-color: var(--c-person); color: var(--paper); }
+.btn.task.active { background-color: var(--c-task); color: var(--paper); }
+
+/* #endregion */
+
+/* #region 05 - Modificatori e stato attivo */
+.btn.transparent { background: transparent; }
+
+.btn.small { padding: var(--control-padding-small); border: none; }
+
+/* #region 06 - Hover, focus e disabilitazione */
+/* Hover limitato ai controlli di questa famiglia e ai dispositivi con mouse. */
+@media (hover: hover) {
+  button.btn:where(:not(:disabled):not([aria-disabled="true"])):hover,
+  button.btnp:where(:not(:disabled):not([aria-disabled="true"])):hover {
+    filter: brightness(var(--control-hover-brightness));
+  }
+
+  button.btn.transparent:where(:not(:disabled):not([aria-disabled="true"])):hover {
+    background: var(--btn-soft);
+    filter: none;
+  }
+}
+
+button:focus-visible {
+  outline: var(--control-focus-width) solid var(--control-focus);
+  outline-offset: var(--control-focus-offset);
+}
+
+/* aria-disabled comunica lo stato ma non blocca gli eventi:
+   preferire disabled sui button nativi; altrimenti gestire gli eventi in JS. */
+button:disabled,
+button[aria-disabled="true"] {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+/* #endregion */
+
+/* #region 07 - Accessibilita: movimento ridotto */
+@media (prefers-reduced-motion: reduce) {
+  button.btn,
+  button.btnp {
+    transition: none;
+  }
+}
+/* #endregion */

@@ -180,12 +180,12 @@ class Store:
 
     # ------------------------------------------------------------------- tags
 
-    def select_tags(self, where: str = "", params: Tuple[Any, ...] = (), limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    def select_tags(self, where: str = "", params: Tuple[Any, ...] = (), limit: Optional[int] = None, order_by: str = "name") -> List[Dict[str, Any]]:
         """Select tags. ``where`` is a raw SQL clause on ``tags``, e.g. ``"parent = ?"``."""
         sql = "SELECT name, category, treed, parent, content, date FROM tags"
         if where:
             sql += f" WHERE {where}"
-        sql += " ORDER BY rowid"
+        sql += f" ORDER BY {order_by}"
         if limit is not None:
             sql += f" LIMIT {int(limit)}"
         with self._lock:

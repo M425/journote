@@ -70,6 +70,8 @@ p {
 /* #region 03 - Barra laterale */
 
 #LeftBar {
+  background: var(--brown-l);
+  border-right: 1px solid var(--muted);
   flex: 0 0 260px;
   display:flex;
   flex-direction:column;
@@ -888,6 +890,21 @@ select:focus-visible,
   font-size: 0.78rem;
 }
 
+#JournalBox .journal-collapse-btn {
+  width: 24px;
+  height: 27px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+#JournalBox .journal-collapse-btn:hover {
+  background: var(--accent-soft);
+}
+
 #JournalBox .mini-calendar-header .calendar-nav-btn {
   width: 28px;
   height: 27px;
@@ -1189,6 +1206,7 @@ select:focus-visible,
   flex-direction: row;
   padding: 6px 6px 6px 0px;
   display: flex;
+  background: var(--paper);
 }
 
 #EditorWrap.editor-maximized {
@@ -1209,7 +1227,6 @@ select:focus-visible,
   font-size: 0.95rem;
   line-height: 1.5;
   display: flex;
-  border: 1px solid var(--border);
   background: var(--paper);
   outline: none;
   flex: 0 0 120px;

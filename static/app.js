@@ -342,7 +342,9 @@ const model = {
   tagsBox_generic: {_v: false, subs: ['TagsBoxList', 'TagsBoxSubHeader']},
   tagsVisible: {_v: [], subs: []},
   tagsActive: {_v: null, subs: ['ProjectFiles']},
-  leftBarVisible: {_v: true, subs: ['LeftBar']}
+  leftBarVisible: {_v: true, subs: ['LeftBar']},
+  rightBarVisible: {_v: true, subs: ['RightBar']},
+  page: {_v: 'home', subs: ['Central']}
 };
 //#endregion
 
@@ -486,8 +488,19 @@ const page = {
     view.ProjectFiles.dispose();
     view.EditorWrap.dispose();
     if (!view.mount(component, 'app')) return;
-    component.el.append(view.el('aside', {id: 'LeftBar'}), view.el('div', {id: mainId}));
-    view.LeftBar.render();
+    
+    component.el.append(
+      view.el('aside', {id: 'LeftBar'}),
+      view.el('div', {id: mainId}),
+      view.el('div', {
+        role: 'separator', tabindex: 0, 'aria-orientation': 'vertical',
+        'aria-label': 'Larghezza colonna file', 'aria-controls': 'ProjectFiles',
+        className: 'project-files-resizer'
+      }),
+      view.el('aside', {id: 'RightBar'})
+    );
+    view.run(() => view.LeftBar.render());
+    view.run(() => view.RightBar.render());
   },
 
   home: {
@@ -699,7 +712,6 @@ const view = {
     return element;
   },
 
-  // render(): acquire root, clear it, build children, render child views.
   mount(component, id) {
     component.el = h.eid(id);
     if (!component.el) return null;
@@ -728,6 +740,26 @@ const view = {
       event.preventDefault();
     };
   },
+
+  //#region Central
+  Central: {
+    render() {
+      if (!view.mount(this, 'Central')) return;
+
+      const currentPage = model.get('page');
+      if (currentPage == 'home') {
+        this.el.appendChild(view.el('div', {id: 'TopBar'}));
+        this.el.appendChild(view.el('div', {id: 'NotesWorkspace'}));
+        this.el.appendChild(view.el('div', {id: 'EditorWrap'}));
+        view.run(() => view.TopBar.render());
+        view.run(() => view.NotesWorkspace.render());
+        view.run(() => view.EditorWrap.render());
+      }
+    }
+  },
+  //#endregion
+
+  //#region EditorWrap
   EditorWrap: {
     languageId: 'journote-markdown',
     tagTypes: {
@@ -1866,7 +1898,9 @@ const view = {
       return document.activeElement === this.ed;
     }
   },
+  //#endregion
 
+  //#region TopBar
   TopBar: {
     render() {
       if (!view.mount(this, 'TopBar')) return;
@@ -1943,7 +1977,9 @@ const view = {
       if (pill) pill.remove();
     }
   },
+  //#endregion
 
+  //#region ProjectFiles
   ProjectFiles: {
     el: null,
     observer: null,
@@ -2189,7 +2225,9 @@ const view = {
       if (selecting) pathInput.focus();
     }
   },
+  //#endregion
 
+  //#region Main
   Main: {
     render() {
       if (!view.mount(this, 'Main')) return;
@@ -2818,7 +2856,9 @@ const view = {
       }
     }
   },
+  //#endregion
 
+  //#region LeftBar
   LeftBar: {
     render() {
       if (!view.mount(this, 'LeftBar')) return;
@@ -2876,7 +2916,36 @@ const view = {
       });
     }
   },
+  //#endregion
 
+  //#region RightBar
+  RightBar: {
+    render() {
+      if (!view.mount(this, 'RightBar')) return;
+
+      if (!model.get('rightBarVisible')) {
+        this.el.style.display = 'none';
+        return;
+      }
+      this.el.style.display = 'block';
+      if (!localStorage.getItem('rightBarWidth')) {
+        this.el.style.flex = '0 0 260px';
+      } else {
+        this.el.style.flex = localStorage.getItem('rightBarWidth');
+      }
+      this.el.appendChild(view.el('div', {innerHTML: 'AAAAAAAA'}))
+    },
+
+    makeResizable(handle) {
+      const element = this.el;
+      view.resizeColumn(element, handle, 180, 500, () => {
+        localStorage.setItem('leftBarWidth', element.style.flex);
+      });
+    }
+  },
+  //#endregion
+
+  //#region TagsBox
   TagsBox: {
     render() {
       if (!view.mount(this, 'TagsBox')) return;
@@ -2896,7 +2965,9 @@ const view = {
       view.TagsBoxList.render();
     }
   },
+  //#endregion
 
+  //#region TagsBoxSubHeader
   TagsBoxSubHeader: {
     render() {
       console.log('[fn] TagsBoxSubHeader.render()');
@@ -2923,7 +2994,9 @@ const view = {
       return this.el;
     }
   },
+  //#endregion
 
+  //#region TagsBoxList
   TagsBoxList: {
     render() {
       console.log('[fn] TagsBoxList.render()');
@@ -3185,7 +3258,9 @@ const view = {
       return li;
     }
   },
+  //#endergion
 
+  //#region ActionRequiredBox
   ActionRequiredBox: {
     render() {
       console.log('[fn] ActionRequiredBox.render()');
@@ -3231,8 +3306,11 @@ const view = {
       return this.el;
     }
   },
+  //#endregion
 
+  //#region JournalBox
   JournalBox: {
+    collapsed: true,
     async render() {
       console.log('[fn] JournalBox.render()');
       if (!view.mount(this, 'JournalBox')) return;
@@ -3245,6 +3323,20 @@ const view = {
       const elJournalHeader = view.el('div', {
         className: 'calendar-header mini-calendar-header'
       });
+
+      const toggleButton = view.el('button', {
+        type: 'button',
+        className: 'journal-collapse-btn',
+        textContent: this.collapsed ? '▸' : '▾',
+        title: this.collapsed ? 'Espandi calendario' : 'Comprimi calendario',
+        'aria-label': this.collapsed ? 'Espandi calendario' : 'Comprimi calendario',
+        'aria-expanded': String(!this.collapsed),
+        onclick: () => {
+          this.collapsed = !this.collapsed;
+          this.render();
+        }
+      });
+      elJournalHeader.appendChild(toggleButton);
 
       const elJournalPrevBtn = view.el('button', {
         className: 'calendar-nav-btn',
@@ -3293,6 +3385,8 @@ const view = {
       elJournalHeader.appendChild(elJournalMonthLabel);
       elJournalHeader.appendChild(elJournalNextBtn);
       this.el.appendChild(elJournalHeader);
+
+      if (this.collapsed) return;
 
       const elJournalTable = view.el('table', {
         className: 'calendar-table mini-calendar'
@@ -4485,6 +4579,11 @@ const modal = {
 //#region ROUTER
 let routeGeneration = 0;
 async function router() {
+  const destinationMap = {
+    '/': 'home',
+    '/home': 'home',
+    'calendar': 'calendar'
+  };
   const generation = ++routeGeneration;
   const hash = location.hash.replace(/^#/, '') || '/';
   try {
@@ -4560,7 +4659,6 @@ async function router() {
         }
       }
       if (ev.key === 'ArrowRight') {
-        console.log('Alt+Right pressed');
         ev.preventDefault();
         const activeTab = model.get('tagsActive');
         const visible = model.get('tagsVisible');
@@ -4590,10 +4688,13 @@ async function router() {
           document.querySelector(`.column[data-key="${CSS.escape(String(activeTab))}"]`)?.classList.toggle('showSubHeader');
         }
       }
-
       if (ev.key === 'f') {
         ev.preventDefault();
         modal.filterModal.render();
+      }
+      if (ev.key === '1') {
+        ev.preventDefault();
+        model.set('leftBarVisible', !model.get('leftBarVisible'))
       }
     }
   });
