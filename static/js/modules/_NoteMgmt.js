@@ -52,8 +52,14 @@ export default {
                     } else {
                         await mn.ev.pub(objtype+'Edited', noteSaved.note);
                     }
-                    if (noteSaved.new_tags.length > 0 || noteSaved.removed_tags.length > 0) {
+                    if (
+                        noteSaved.new_tags.length > 0 ||
+                        noteSaved.removed_tags.length > 0) {
                         await mn.st.reload('tags');
+                        await mn.st.reload('tasks');
+                    }
+                    if ( noteSaved.note.task !== note.task) {
+                        await mn.st.reload('tasks');
                     }
                 }
             },

@@ -222,7 +222,6 @@ export default {
 
             const taskList = mn.vu.el('ul', { className: 'tagList-tree' });
             untaggedTasks.forEach(task => {
-                console.log('untagged task', task)
                 taskList.appendChild(this.createTaskElement(task, mn.st.get('tagsBox_task')));
             });
             section.appendChild(taskList);

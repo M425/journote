@@ -320,7 +320,7 @@ export default {
         this.updateControls();
 
         try {
-            await mn.ev.pub('saveNote', { note });
+            await mn.ev.pub('saveNote', { note, oldNote: this.currentNote });
         } finally {
             this.saving = false;
             if (this.mnIsActive()) this.updateControls();

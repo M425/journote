@@ -31,11 +31,18 @@ export default {
 
     mnSubscribe () {
         return {
-            noteCreated: (params) => {
+            noteCreated: async (params) => {
                 const {date, duedate, id, replied_to, tags, task, text} = params;
                 if (this.note.id === replied_to) {
                     this.mnDom.dataset.note = JSON.stringify({...this.note, reply: id});
-                    this.mnRefresh();
+                    await this.mnRefresh();
+                }
+            },
+            noteEdited: async (params) => {
+                const {date, duedate, id, replied_to, reply, tags, task, text, timestamp} = params;
+                if (this.note.id === id) {
+                    this.mnDom.dataset.note = JSON.stringify({...this.note, ...params});
+                    await this.mnRefresh();
                 }
             },
             noteDeleted: (params) => {

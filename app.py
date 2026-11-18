@@ -448,7 +448,7 @@ def api_put_note():
     note["replied_to"] = parent_id
     note["text"] = cleaned_text
     note["tags"] = find_tag_in_text(cleaned_text)
-    note['date'] = date
+    note['date'] = date if 'date' not in note else note['date']
 
     added_tags, removed_tags = compare_tags(old_tags, note["tags"])
     logger.info(f"Added tags: {added_tags}, Removed tags: {removed_tags}")

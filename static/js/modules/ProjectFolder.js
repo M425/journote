@@ -99,7 +99,7 @@ export default {
                 width: 100%;
                 box-sizing: border-box;
                 margin: 0;
-                padding: 7px 5px;
+                padding: 2px 5px;
             }
 
             [mini-key="ProjectFolder"] .project-files-row {
@@ -172,6 +172,20 @@ export default {
 
             [mini-key="ProjectFolder"] .project-files-icon {
                 flex: 0 0 18px;
+
+                &.fa-folder-open { color: #cbc32b; }
+                &.fa-folder { color: #cbc32b; }
+                &.fa-file-pdf { color: #c53232; }
+                &.fa-file-zipper { color: #856c27; }
+                &.fa-file-word { color: #19187e; }
+                &.fa-file-excel { color: #187e42; }
+                &.fa-file-powerpoint { color: #b38022; }
+                &.fa-file-image { color: #6d187e; }
+                &.fa-file-audio {}
+                &.fa-file-video {}
+                &.fa-file-zipper {}
+                &.fa-file-code {}
+                &.fa-file-lines {}
             }
 
             [mini-key="ProjectFolder"] .project-files-row > .project-files-modified {
